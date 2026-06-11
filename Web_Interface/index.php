@@ -372,8 +372,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
 </header>
 
 <!-- =====================================================
-     FORM UPLOAD
+     FORM UPLOAD  (disembunyikan setelah ada hasil)
 ===================================================== -->
+<?php if (!$result): ?>
 <div class="card">
   <h2>📤 Upload Video</h2>
 
@@ -401,6 +402,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     </div>
   </form>
 </div>
+<?php endif; /* !$result */ ?>
 
 <?php if ($result): ?>
 <?php
@@ -493,6 +495,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     </div>
   </div>
   <?php endif; ?>
+</div>
+<?php endif; ?>
+
+<?php if ($result): ?>
+<div style="max-width:720px;width:100%;text-align:center;margin-bottom:32px;">
+  <a href="index.php" style="
+    display:inline-flex;align-items:center;gap:8px;
+    padding:12px 32px;border-radius:8px;
+    background:rgba(108,99,255,.15);border:1px solid rgba(108,99,255,.4);
+    color:#a78bfa;font-size:.95rem;font-weight:600;text-decoration:none;
+    transition:background .2s;">
+    ← Analisis Video Lain
+  </a>
 </div>
 <?php endif; ?>
 
