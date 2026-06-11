@@ -16,11 +16,13 @@ warnings.filterwarnings("ignore")
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
+import subprocess
 import cv2
 import numpy as np
 import mediapipe as mp
 import tensorflow as tf
-import imageio.v2 as iio        # imageio-ffmpeg: bundled FFmpeg, no system install
+import imageio.v2 as iio
+import imageio_ffmpeg              # untuk mendapatkan path binary FFmpeg bawaan
 
 from flask import Flask, request, jsonify, send_file, abort
 from werkzeug.utils import secure_filename
@@ -279,6 +281,32 @@ def finalize_video(raw_path: str, final_path: str,
     writer.close()
 
 # =========================================================
+# PASS 3 — mux audio dari video asli ke video anotasi
+# =========================================================
+def mux_audio(video_no_audio: str, audio_source: str, output_path: str) -> None:
+    """
+    Gabungkan video teranotasi (tanpa audio) dengan audio dari video asli.
+    Menggunakan binary FFmpeg bawaan imageio-ffmpeg — tidak perlu install sistem.
+    """
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+
+    subprocess.run(
+        [
+            ffmpeg_exe, "-y",
+            "-i", video_no_audio,   # video H.264 tanpa audio
+            "-i", audio_source,     # video asli (sumber audio)
+            "-c:v", "copy",         # salin stream video apa adanya
+            "-c:a", "aac",          # encode audio ke AAC
+            "-map", "0:v:0",        # ambil video dari input pertama
+            "-map", "1:a:0",        # ambil audio dari input kedua
+            "-shortest",            # selesai saat stream terpendek habis
+            output_path,
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+# =========================================================
 # ENSEMBLE PREDICTION
 # =========================================================
 def ensemble_predict(all_features: np.ndarray) -> dict:
@@ -357,10 +385,11 @@ def predict():
     if not allowed_file(file.filename):
         return jsonify({"error": f"Format tidak didukung. Gunakan: {', '.join(ALLOWED_EXT).upper()}"}), 400
 
-    uid        = uuid.uuid4().hex
-    input_path = os.path.join(UPLOAD_DIR, f"{uid}_input.mp4")
-    raw_path   = os.path.join(UPLOAD_DIR, f"{uid}_raw.mp4")        # pass 1 (mp4v)
-    final_path = os.path.join(UPLOAD_DIR, f"{uid}_annotated.mp4")  # pass 2 (H.264)
+    uid          = uuid.uuid4().hex
+    input_path   = os.path.join(UPLOAD_DIR, f"{uid}_input.mp4")
+    raw_path     = os.path.join(UPLOAD_DIR, f"{uid}_raw.mp4")          # pass 1 (mp4v, no audio)
+    silent_path  = os.path.join(UPLOAD_DIR, f"{uid}_silent.mp4")       # pass 2 (H.264, no audio)
+    final_path   = os.path.join(UPLOAD_DIR, f"{uid}_annotated.mp4")    # pass 3 (H.264 + audio)
 
     file.save(input_path)
 
@@ -374,12 +403,20 @@ def predict():
         # --- Prediksi ensemble ---
         result = ensemble_predict(all_features)
 
-        # --- Pass 2: label overlay + encode H.264 via imageio-ffmpeg ---
+        # --- Pass 2: label overlay + encode H.264 (belum ada audio) ---
         finalize_video(
-            raw_path, final_path,
+            raw_path, silent_path,
             result["display"], result["confidence"], result["label"]
         )
         os.remove(raw_path)
+
+        # --- Pass 3: mux audio dari video asli ---
+        try:
+            mux_audio(silent_path, input_path, final_path)
+            os.remove(silent_path)
+        except Exception:
+            # jika video asli tidak punya audio, pakai video tanpa audio
+            os.rename(silent_path, final_path)
 
         result["annotated_video"] = f"{uid}_annotated.mp4"
 
@@ -390,7 +427,6 @@ def predict():
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
     finally:
-        # bersihkan file input asli
         if os.path.exists(input_path):
             os.remove(input_path)
         gc.collect()

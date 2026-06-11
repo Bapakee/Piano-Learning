@@ -309,41 +309,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
   .fill-poor  { background:var(--poor); }
   .prob-pct   { width:52px; text-align:right; font-size:.85rem; }
 
-  /* per-model detail toggle */
-  .detail-toggle {
-    background: none;
-    border: 1px solid var(--border);
-    color: var(--muted);
-    border-radius: 6px;
-    padding: 6px 14px;
-    font-size: .8rem;
-    cursor: pointer;
-    margin-bottom: 20px;
-    transition: border-color .2s, color .2s;
-  }
-  .detail-toggle:hover { border-color: var(--accent2); color: var(--accent2); }
-  .model-detail { display:none; }
-  .model-detail.open { display:block; }
-  .model-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-    gap: 10px;
-    margin-bottom: 22px;
-  }
-  .model-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 12px 14px;
-    font-size: .82rem;
-  }
-  .model-card .mc-title { color: var(--accent2); font-weight:600; margin-bottom:6px; }
-  .model-card .mc-row   { display:flex; justify-content:space-between; color:var(--muted); margin-top:3px; }
-  .model-card .mc-pred  { font-weight:600; }
-  .mc-good  { color: var(--good); }
-  .mc-needs { color: var(--needs); }
-  .mc-poor  { color: var(--poor); }
-
   /* ======================================================
      VIDEO
   ====================================================== */
@@ -421,11 +386,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     'needs_improvement'=> 'Needs Improvement',
     'poor'             => 'Poor',
   ];
-  $pred_css = [
-    'good'             => 'mc-good',
-    'needs_improvement'=> 'mc-needs',
-    'poor'             => 'mc-poor',
-  ];
 ?>
 <!-- =====================================================
      HASIL KLASIFIKASI
@@ -458,30 +418,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
       <?php endforeach; ?>
     </div>
   </div>
-
-  <!-- Per-model detail (dari Flask jika tersedia) -->
-  <?php if (!empty($result['per_model'])): ?>
-  <button class="detail-toggle" onclick="toggleDetail(this)">▼ Lihat detail per model</button>
-  <div class="model-detail" id="modelDetail">
-    <div class="model-grid">
-      <?php foreach ($result['per_model'] as $i => $m): ?>
-      <div class="model-card">
-        <div class="mc-title">Fold <?= $i + 1 ?></div>
-        <div class="mc-row">
-          <span>Prediksi</span>
-          <span class="mc-pred <?= $pred_css[$m['label']] ?>"><?= $name_map[$m['label']] ?></span>
-        </div>
-        <?php foreach ($m['probabilities'] as $k => $v): ?>
-        <div class="mc-row">
-          <span><?= $name_map[$k] ?></span>
-          <span><?= $v ?>%</span>
-        </div>
-        <?php endforeach; ?>
-      </div>
-      <?php endforeach; ?>
-    </div>
-  </div>
-  <?php endif; ?>
 
   <!-- Annotated video -->
   <?php if ($video_url): ?>
@@ -550,14 +486,6 @@ form.addEventListener('submit', () => {
   loading.style.display = 'flex';
 });
 
-// =========================================================
-// TOGGLE DETAIL PER MODEL
-// =========================================================
-function toggleDetail(btn) {
-  const box = document.getElementById('modelDetail');
-  const open = box.classList.toggle('open');
-  btn.textContent = (open ? '▲ ' : '▼ ') + 'Lihat detail per model';
-}
 </script>
 
 </body>
