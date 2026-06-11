@@ -385,11 +385,14 @@ def predict():
     if not allowed_file(file.filename):
         return jsonify({"error": f"Format tidak didukung. Gunakan: {', '.join(ALLOWED_EXT).upper()}"}), 400
 
-    uid          = uuid.uuid4().hex
-    input_path   = os.path.join(UPLOAD_DIR, f"{uid}_input.mp4")
-    raw_path     = os.path.join(UPLOAD_DIR, f"{uid}_raw.mp4")          # pass 1 (mp4v, no audio)
-    silent_path  = os.path.join(UPLOAD_DIR, f"{uid}_silent.mp4")       # pass 2 (H.264, no audio)
-    final_path   = os.path.join(UPLOAD_DIR, f"{uid}_annotated.mp4")    # pass 3 (H.264 + audio)
+    uid         = uuid.uuid4().hex
+    # nama dasar dari file asli (tanpa ekstensi, karakter aman)
+    orig_stem   = os.path.splitext(secure_filename(file.filename))[0]
+
+    input_path  = os.path.join(UPLOAD_DIR, f"{uid}_input.mp4")
+    raw_path    = os.path.join(UPLOAD_DIR, f"{uid}_raw.mp4")       # pass 1 (mp4v, no audio)
+    silent_path = os.path.join(UPLOAD_DIR, f"{uid}_silent.mp4")    # pass 2 (H.264, no audio)
+    # final_path ditentukan setelah label diketahui
 
     file.save(input_path)
 
@@ -402,6 +405,10 @@ def predict():
 
         # --- Prediksi ensemble ---
         result = ensemble_predict(all_features)
+
+        # --- nama file final: (nama_file_awal)_(hasil_klasifikasi).mp4 ---
+        final_name  = f"{orig_stem}_{result['label']}.mp4"
+        final_path  = os.path.join(UPLOAD_DIR, final_name)
 
         # --- Pass 2: label overlay + encode H.264 (belum ada audio) ---
         finalize_video(
@@ -418,7 +425,7 @@ def predict():
             # jika video asli tidak punya audio, pakai video tanpa audio
             os.rename(silent_path, final_path)
 
-        result["annotated_video"] = f"{uid}_annotated.mp4"
+        result["annotated_video"] = final_name
 
         return jsonify(result), 200
 
