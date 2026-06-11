@@ -17,7 +17,7 @@ function call_flask_api(array $file): array {
             'video' => new CURLFile($file['tmp_name'], $file['type'], $file['name']),
         ],
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 600,   // maks 10 menit untuk video panjang
+        CURLOPT_TIMEOUT        => 600,
     ]);
 
     $body = curl_exec($ch);
@@ -26,8 +26,7 @@ function call_flask_api(array $file): array {
     curl_close($ch);
 
     if ($err) {
-        return ['error' => 'cURL error: ' . $err .
-            '. Pastikan Flask API sudah berjalan: python flask_api.py'];
+        return ['error' => 'cURL error: ' . $err . '. Pastikan Flask API sudah berjalan: python flask_api.py'];
     }
 
     $data = json_decode($body, true);
@@ -47,21 +46,12 @@ function label_css(string $label): string {
     };
 }
 
-function label_icon(string $label): string {
-    return match ($label) {
-        'good'             => '✅',
-        'needs_improvement'=> '⚠️',
-        'poor'             => '❌',
-        default            => '🎹',
-    };
-}
-
 // =========================================================
 // PROCESS UPLOAD
 // =========================================================
-$result       = null;
-$error        = null;
-$video_url    = null;
+$result    = null;
+$error     = null;
+$video_url = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     $file = $_FILES['video'];
@@ -95,110 +85,89 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Piano Playing Level Classifier</title>
 <style>
-  /* ======================================================
-     RESET & VARIABLES
-  ====================================================== */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-  :root {
-    --bg:       #0d0f14;
-    --surface:  #161a24;
-    --card:     #1e2332;
-    --border:   #2a3048;
-    --accent:   #6c63ff;
-    --accent2:  #a78bfa;
-    --text:     #e2e8f0;
-    --muted:    #7c8399;
-    --good:     #22c55e;
-    --needs:    #f59e0b;
-    --poor:     #ef4444;
-    --radius:   14px;
-  }
 
   body {
     font-family: 'Segoe UI', system-ui, sans-serif;
-    background: var(--bg);
-    color: var(--text);
+    background: #ffffff;
+    color: #1a1a1a;
     min-height: 100vh;
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 40px 16px 80px;
+    padding: 48px 16px 80px;
   }
 
-  /* ======================================================
-     HEADER
-  ====================================================== */
-  .header { text-align: center; margin-bottom: 40px; }
-  .header .piano-icon {
-    font-size: 56px;
-    display: block;
-    margin-bottom: 12px;
-    filter: drop-shadow(0 0 18px rgba(108,99,255,.65));
+  /* HEADER */
+  .header {
+    text-align: center;
+    margin-bottom: 40px;
   }
   .header h1 {
-    font-size: 2rem;
-    font-weight: 700;
-    background: linear-gradient(135deg, #6c63ff, #a78bfa, #38bdf8);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    letter-spacing: -.5px;
+    font-size: 1.6rem;
+    font-weight: 600;
+    color: #1a1a1a;
+    letter-spacing: -0.3px;
   }
-  .header p { color: var(--muted); margin-top: 8px; font-size: .95rem; }
-
-  /* badge kecil "Ensemble 5 Model" */
-  .ensemble-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: rgba(108,99,255,.15);
-    border: 1px solid rgba(108,99,255,.35);
-    border-radius: 99px;
-    padding: 4px 14px;
-    font-size: .78rem;
-    color: var(--accent2);
-    margin-top: 12px;
+  .header p {
+    margin-top: 6px;
+    font-size: .875rem;
+    color: #666;
+  }
+  .header .sub {
+    display: inline-block;
+    margin-top: 10px;
+    font-size: .75rem;
+    color: #999;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 3px 10px;
   }
 
-  /* ======================================================
-     CARD
-  ====================================================== */
+  /* CARD */
   .card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 32px;
     width: 100%;
-    max-width: 720px;
-    margin-bottom: 28px;
-    box-shadow: 0 8px 32px rgba(0,0,0,.4);
+    max-width: 640px;
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 28px;
+    margin-bottom: 20px;
   }
   .card h2 {
-    font-size: 1.1rem;
+    font-size: .9rem;
     font-weight: 600;
-    color: var(--accent2);
-    margin-bottom: 20px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    color: #444;
+    margin-bottom: 18px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
   }
 
-  /* ======================================================
-     UPLOAD AREA
-  ====================================================== */
+  /* ERROR */
+  .error-box {
+    border: 1px solid #f5c6c6;
+    background: #fff5f5;
+    border-radius: 6px;
+    padding: 12px 16px;
+    color: #c0392b;
+    font-size: .875rem;
+    margin-bottom: 16px;
+  }
+
+  /* DROP ZONE */
   .drop-zone {
-    border: 2px dashed var(--border);
-    border-radius: 10px;
-    padding: 36px 20px;
+    border: 1px dashed #bbb;
+    border-radius: 6px;
+    padding: 32px 20px;
     text-align: center;
     cursor: pointer;
-    transition: border-color .2s, background .2s;
     position: relative;
+    transition: border-color .15s, background .15s;
   }
-  .drop-zone:hover, .drop-zone.drag-over {
-    border-color: var(--accent);
-    background: rgba(108,99,255,.06);
+  .drop-zone:hover,
+  .drop-zone.drag-over {
+    border-color: #888;
+    background: #fafafa;
   }
   .drop-zone input[type="file"] {
     position: absolute;
@@ -206,142 +175,183 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     opacity: 0;
     cursor: pointer;
   }
-  .drop-zone .dz-icon  { font-size: 42px; margin-bottom: 10px; }
-  .drop-zone .dz-label { font-size: .95rem; color: var(--muted); }
-  .drop-zone .dz-label span { color: var(--accent2); font-weight: 600; }
-  .drop-zone .dz-hint  { font-size: .8rem; color: var(--muted); margin-top: 6px; }
-  .file-name-display   { margin-top: 14px; font-size: .88rem; color: var(--accent2);
-                         word-break: break-all; min-height: 1.4em; }
+  .drop-zone .dz-label {
+    font-size: .875rem;
+    color: #555;
+  }
+  .drop-zone .dz-label span {
+    color: #1a1a1a;
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .drop-zone .dz-hint {
+    font-size: .78rem;
+    color: #999;
+    margin-top: 6px;
+  }
+  .file-name-display {
+    margin-top: 10px;
+    font-size: .8rem;
+    color: #555;
+    min-height: 1.2em;
+    word-break: break-all;
+  }
 
-  /* ======================================================
-     BUTTON
-  ====================================================== */
+  /* BUTTON */
   .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
+    display: block;
     width: 100%;
-    padding: 13px 28px;
-    border-radius: 8px;
-    font-size: 1rem;
+    padding: 11px;
+    margin-top: 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: .9rem;
     font-weight: 600;
     cursor: pointer;
-    border: none;
-    margin-top: 20px;
-    transition: transform .15s, opacity .15s;
+    transition: background .15s;
   }
-  .btn:active  { transform: scale(.97); }
   .btn-primary {
-    background: linear-gradient(135deg, var(--accent), #818cf8);
+    background: #1a1a1a;
     color: #fff;
   }
-  .btn-primary:hover    { opacity: .88; }
-  .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-primary:hover    { background: #333; }
+  .btn-primary:disabled { background: #aaa; cursor: not-allowed; }
 
-  /* ======================================================
-     LOADING
-  ====================================================== */
+  /* LOADING */
   .loading-wrap {
     display: none;
     flex-direction: column;
     align-items: center;
-    gap: 16px;
-    padding: 20px 0 8px;
+    gap: 12px;
+    padding: 16px 0 4px;
   }
   .spinner {
-    width: 48px; height: 48px;
-    border: 4px solid var(--border);
-    border-top-color: var(--accent);
+    width: 32px; height: 32px;
+    border: 3px solid #e0e0e0;
+    border-top-color: #1a1a1a;
     border-radius: 50%;
-    animation: spin .9s linear infinite;
+    animation: spin .8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .loading-wrap p { color: var(--muted); font-size: .9rem; text-align: center; }
+  .loading-wrap p { font-size: .8rem; color: #888; text-align: center; }
 
-  /* ======================================================
-     ERROR
-  ====================================================== */
-  .error-box {
-    background: rgba(239,68,68,.12);
-    border: 1px solid rgba(239,68,68,.35);
-    border-radius: 10px;
-    padding: 16px 20px;
-    color: #fca5a5;
-    font-size: .9rem;
-    line-height: 1.6;
-    margin-bottom: 20px;
-  }
-
-  /* ======================================================
-     RESULT — badge
-  ====================================================== */
+  /* RESULT BADGE */
   .result-badge {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 22px 26px;
-    border-radius: 12px;
-    margin-bottom: 24px;
+    padding: 16px 20px;
+    border-radius: 6px;
+    margin-bottom: 20px;
+    border-left: 4px solid;
+  }
+  .result-good  { border-color: #2e7d32; background: #f6fbf6; }
+  .result-needs { border-color: #e65100; background: #fffaf5; }
+  .result-poor  { border-color: #c62828; background: #fff5f5; }
+
+  .badge-label {
+    font-size: 1.2rem;
     font-weight: 700;
+    color: #1a1a1a;
   }
-  .result-good  { background: rgba(34,197,94,.15);  border:1px solid rgba(34,197,94,.4);  color:var(--good); }
-  .result-needs { background: rgba(245,158,11,.15); border:1px solid rgba(245,158,11,.4); color:var(--needs); }
-  .result-poor  { background: rgba(239,68,68,.15);  border:1px solid rgba(239,68,68,.4);  color:var(--poor); }
+  .result-good  .badge-label { color: #2e7d32; }
+  .result-needs .badge-label { color: #e65100; }
+  .result-poor  .badge-label { color: #c62828; }
 
-  .badge-icon    { font-size: 2.4rem; }
-  .badge-info    { display:flex; flex-direction:column; gap:4px; }
-  .badge-label   { font-size: 1.4rem; }
-  .badge-conf    { font-size: .85rem; opacity: .8; font-weight:500; }
-  .badge-models  { font-size: .78rem; opacity: .65; font-weight:400; }
+  .badge-meta {
+    margin-top: 4px;
+    font-size: .8rem;
+    color: #777;
+  }
 
-  /* ======================================================
-     PROBABILITY BARS
-  ====================================================== */
-  .prob-section h3 { font-size:.9rem; color:var(--muted); margin-bottom:12px; }
-  .prob-bars  { display:flex; flex-direction:column; gap:10px; margin-bottom:28px; }
-  .prob-row   { display:flex; align-items:center; gap:12px; }
-  .prob-name  { width:140px; font-size:.85rem; color:var(--muted); flex-shrink:0; }
-  .prob-track { flex:1; height:10px; background:var(--border); border-radius:99px; overflow:hidden; }
-  .prob-fill  { height:100%; border-radius:99px; }
-  .fill-good  { background:var(--good); }
-  .fill-needs { background:var(--needs); }
-  .fill-poor  { background:var(--poor); }
-  .prob-pct   { width:52px; text-align:right; font-size:.85rem; }
+  /* PROBABILITY BARS */
+  .prob-section { margin-bottom: 24px; }
+  .prob-section h3 {
+    font-size: .78rem;
+    color: #999;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-bottom: 12px;
+  }
+  .prob-bars { display: flex; flex-direction: column; gap: 8px; }
+  .prob-row  { display: flex; align-items: center; gap: 10px; }
+  .prob-name {
+    width: 140px;
+    font-size: .8rem;
+    color: #555;
+    flex-shrink: 0;
+  }
+  .prob-track {
+    flex: 1;
+    height: 6px;
+    background: #ebebeb;
+    border-radius: 99px;
+    overflow: hidden;
+  }
+  .prob-fill  { height: 100%; border-radius: 99px; background: #1a1a1a; }
+  .fill-good  { background: #2e7d32; }
+  .fill-needs { background: #e65100; }
+  .fill-poor  { background: #c62828; }
+  .prob-pct {
+    width: 44px;
+    text-align: right;
+    font-size: .8rem;
+    color: #444;
+  }
 
-  /* ======================================================
-     VIDEO
-  ====================================================== */
-  .video-section h3 { font-size:.95rem; color:var(--muted); margin-bottom:12px; }
+  /* VIDEO */
+  .video-section h3 {
+    font-size: .78rem;
+    color: #999;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-bottom: 10px;
+  }
   .video-wrap {
-    border-radius:10px;
-    overflow:hidden;
-    border:1px solid var(--border);
-    background:#000;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #000;
   }
-  .video-wrap video { width:100%; max-height:480px; display:block; }
+  .video-wrap video {
+    width: 100%;
+    max-height: 460px;
+    display: block;
+  }
 
-  /* ======================================================
-     FOOTER
-  ====================================================== */
-  footer { margin-top:10px; color:var(--muted); font-size:.8rem; text-align:center; }
+  /* BACK LINK */
+  .back-link {
+    max-width: 640px;
+    width: 100%;
+    margin-bottom: 24px;
+  }
+  .back-link a {
+    font-size: .875rem;
+    color: #555;
+    text-decoration: none;
+    border-bottom: 1px solid #ccc;
+    padding-bottom: 1px;
+  }
+  .back-link a:hover { color: #1a1a1a; border-color: #1a1a1a; }
+
+  /* FOOTER */
+  footer {
+    font-size: .75rem;
+    color: #bbb;
+    text-align: center;
+    margin-top: 8px;
+  }
 </style>
 </head>
 <body>
 
 <header class="header">
-  <span class="piano-icon">🎹</span>
   <h1>Piano Playing Level Classifier</h1>
-  <p>Upload video bermain piano — BiLSTM + MediaPipe akan menganalisis tingkatan permainan Anda.</p>
-  <span class="ensemble-badge">🤝 Ensemble 5 Model (K-Fold)</span>
+  <p>Upload video bermain piano untuk mendapatkan hasil klasifikasi tingkatan permainan.</p>
 </header>
 
-<!-- =====================================================
-     FORM UPLOAD  (disembunyikan setelah ada hasil)
-===================================================== -->
 <?php if (!$result): ?>
+<!-- FORM UPLOAD -->
 <div class="card">
-  <h2>📤 Upload Video</h2>
+  <h2>Upload Video</h2>
 
   <?php if ($error): ?>
   <div class="error-box"><?= $error ?></div>
@@ -350,32 +360,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
   <form id="uploadForm" method="POST" enctype="multipart/form-data">
     <div class="drop-zone" id="dropZone">
       <input type="file" name="video" id="videoInput" accept="video/*" required>
-      <div class="dz-icon">🎬</div>
-      <p class="dz-label"><span>Klik untuk memilih</span> atau seret video ke sini</p>
-      <p class="dz-hint">Format: MP4, MOV, AVI, MKV, WEBM &nbsp;·&nbsp; Maks. <?= MAX_FILE_MB ?> MB</p>
+      <p class="dz-label"><span>Klik untuk memilih file</span> atau seret ke sini</p>
+      <p class="dz-hint">MP4, MOV, AVI, MKV, WEBM &nbsp;&mdash;&nbsp; Maks. <?= MAX_FILE_MB ?> MB</p>
     </div>
     <div class="file-name-display" id="fileNameDisplay"></div>
 
-    <button type="submit" class="btn btn-primary" id="submitBtn">
-      🔍 Analisis Video
-    </button>
+    <button type="submit" class="btn btn-primary" id="submitBtn">Analisis Video</button>
 
     <div class="loading-wrap" id="loadingWrap">
       <div class="spinner"></div>
-      <p>Memproses video dengan MediaPipe &amp; ensemble 5 model BiLSTM...<br>
-         Mohon tunggu, proses ini mungkin membutuhkan beberapa menit.</p>
+      <p>Memproses video, mohon tunggu...</p>
     </div>
   </form>
 </div>
-<?php endif; /* !$result */ ?>
+<?php endif; ?>
 
 <?php if ($result): ?>
 <?php
-  $css   = label_css($result['label']);
-  $icon  = label_icon($result['label']);
-  $probs = $result['probabilities'];
+  $css      = label_css($result['label']);
+  $probs    = $result['probabilities'];
   $n_models = $result['model_count'] ?? 5;
-
   $fill_map = [
     'good'             => 'fill-good',
     'needs_improvement'=> 'fill-needs',
@@ -387,25 +391,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     'poor'             => 'Poor',
   ];
 ?>
-<!-- =====================================================
-     HASIL KLASIFIKASI
-===================================================== -->
+<!-- HASIL KLASIFIKASI -->
 <div class="card">
-  <h2>🎯 Hasil Klasifikasi</h2>
+  <h2>Hasil Klasifikasi</h2>
 
-  <!-- Badge utama -->
   <div class="result-badge <?= $css ?>">
-    <span class="badge-icon"><?= $icon ?></span>
-    <div class="badge-info">
-      <span class="badge-label"><?= htmlspecialchars($result['display']) ?></span>
-      <span class="badge-conf">Confidence: <?= $result['confidence'] ?>%</span>
-      <span class="badge-models">Hasil ensemble dari <?= $n_models ?> model</span>
+    <div class="badge-label"><?= htmlspecialchars($result['display']) ?></div>
+    <div class="badge-meta">
+      Confidence: <?= $result['confidence'] ?>% &nbsp;&mdash;&nbsp; Ensemble dari <?= $n_models ?> model
     </div>
   </div>
 
-  <!-- Probability bars -->
   <div class="prob-section">
-    <h3>Distribusi Probabilitas (rata-rata ensemble)</h3>
+    <h3>Distribusi Probabilitas</h3>
     <div class="prob-bars">
       <?php foreach ($probs as $key => $pct): ?>
       <div class="prob-row">
@@ -413,46 +411,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
         <div class="prob-track">
           <div class="prob-fill <?= $fill_map[$key] ?>" style="width:<?= $pct ?>%"></div>
         </div>
-        <span class="prob-pct <?= $pred_css[$key] ?>"><?= $pct ?>%</span>
+        <span class="prob-pct"><?= $pct ?>%</span>
       </div>
       <?php endforeach; ?>
     </div>
   </div>
 
-  <!-- Annotated video -->
   <?php if ($video_url): ?>
   <div class="video-section">
-    <h3>🖐️ Video dengan Anotasi MediaPipe</h3>
+    <h3>Video Anotasi MediaPipe</h3>
     <div class="video-wrap">
       <video controls playsinline>
         <source src="<?= htmlspecialchars($video_url) ?>" type="video/mp4">
-        Browser Anda tidak mendukung pemutaran video inline.
+        Browser Anda tidak mendukung pemutaran video.
       </video>
     </div>
   </div>
   <?php endif; ?>
 </div>
-<?php endif; ?>
 
-<?php if ($result): ?>
-<div style="max-width:720px;width:100%;text-align:center;margin-bottom:32px;">
-  <a href="index.php" style="
-    display:inline-flex;align-items:center;gap:8px;
-    padding:12px 32px;border-radius:8px;
-    background:rgba(108,99,255,.15);border:1px solid rgba(108,99,255,.4);
-    color:#a78bfa;font-size:.95rem;font-weight:600;text-decoration:none;
-    transition:background .2s;">
-    ← Analisis Video Lain
-  </a>
+<div class="back-link">
+  <a href="index.php">Kembali &amp; analisis video lain</a>
 </div>
 <?php endif; ?>
 
-<footer>Piano Learning Classification &nbsp;·&nbsp; MediaPipe + BiLSTM Ensemble &nbsp;·&nbsp; Tugas Akhir Patrick</footer>
+<footer>Patrick Andersen Kanginan &nbsp;&mdash;&nbsp; 160421123</footer>
 
 <script>
-// =========================================================
-// DRAG & DROP
-// =========================================================
 const dropZone  = document.getElementById('dropZone');
 const fileInput = document.getElementById('videoInput');
 const fileLabel = document.getElementById('fileNameDisplay');
@@ -460,32 +445,28 @@ const form      = document.getElementById('uploadForm');
 const submitBtn = document.getElementById('submitBtn');
 const loading   = document.getElementById('loadingWrap');
 
-fileInput.addEventListener('change', () => {
-  if (fileInput.files[0]) {
-    fileLabel.textContent = '📁 ' + fileInput.files[0].name;
-  }
-});
+if (fileInput) {
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) fileLabel.textContent = fileInput.files[0].name;
+  });
 
-['dragenter', 'dragover'].forEach(e =>
-  dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.classList.add('drag-over'); })
-);
-['dragleave', 'drop'].forEach(e =>
-  dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.classList.remove('drag-over'); })
-);
-dropZone.addEventListener('drop', e => {
-  const f = e.dataTransfer.files;
-  if (f[0]) { fileInput.files = f; fileLabel.textContent = '📁 ' + f[0].name; }
-});
+  ['dragenter','dragover'].forEach(e =>
+    dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.classList.add('drag-over'); })
+  );
+  ['dragleave','drop'].forEach(e =>
+    dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.classList.remove('drag-over'); })
+  );
+  dropZone.addEventListener('drop', e => {
+    const f = e.dataTransfer.files;
+    if (f[0]) { fileInput.files = f; fileLabel.textContent = f[0].name; }
+  });
 
-// =========================================================
-// SHOW LOADING
-// =========================================================
-form.addEventListener('submit', () => {
-  submitBtn.disabled    = true;
-  submitBtn.textContent = 'Memproses...';
-  loading.style.display = 'flex';
-});
-
+  form.addEventListener('submit', () => {
+    submitBtn.disabled    = true;
+    submitBtn.textContent = 'Memproses...';
+    loading.style.display = 'flex';
+  });
+}
 </script>
 
 </body>
