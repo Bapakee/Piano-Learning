@@ -1,0 +1,7 @@
+=== BEST HYPERPARAMETER FOLD 5 ===
+
+lstm_1: 256
+lstm_2: 128
+dense_units: 96
+dropout: 0.4
+learning_rate: 0.001

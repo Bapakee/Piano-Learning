@@ -1,0 +1,11 @@
+=== CLASSIFICATION REPORT TOTAL ===
+
+                   precision    recall  f1-score   support
+
+             good     0.9957    0.9831    0.9893       472
+needs_improvement     0.9869    0.9307    0.9580       404
+             poor     0.9003    0.9897    0.9429       292
+
+         accuracy                         0.9666      1168
+        macro avg     0.9610    0.9678    0.9634      1168
+     weighted avg     0.9688    0.9666    0.9669      1168
