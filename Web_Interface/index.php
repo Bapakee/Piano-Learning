@@ -1,13 +1,10 @@
 <?php
-// =========================================================
-// CONFIG
-// =========================================================
+// Base URL of the Flask API and the maximum allowed upload size in megabytes
 define('FLASK_URL',   'http://localhost:5000');
 define('MAX_FILE_MB', 200);
 
-// =========================================================
-// HELPERS
-// =========================================================
+// Sends the uploaded video to the Flask /predict endpoint via cURL
+// and returns the decoded JSON response as an associative array.
 function call_flask_api(array $file): array {
     $ch = curl_init(FLASK_URL . '/predict');
 
@@ -37,6 +34,7 @@ function call_flask_api(array $file): array {
     return $data;
 }
 
+// Maps a label key to the CSS class used to style the result badge
 function label_css(string $label): string {
     return match ($label) {
         'good'             => 'result-good',
@@ -46,12 +44,11 @@ function label_css(string $label): string {
     };
 }
 
-// =========================================================
-// PROCESS UPLOAD
-// =========================================================
 $result    = null;
 $error     = null;
 $video_url = null;
+
+// Validate the upload and forward it to the Flask API on form submission
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     $file = $_FILES['video'];
@@ -445,22 +442,28 @@ const form      = document.getElementById('uploadForm');
 const submitBtn = document.getElementById('submitBtn');
 const loading   = document.getElementById('loadingWrap');
 
+// Upload form is only rendered when there is no result to display
 if (fileInput) {
+  // Show the selected filename beneath the drop zone
   fileInput.addEventListener('change', () => {
     if (fileInput.files[0]) fileLabel.textContent = fileInput.files[0].name;
   });
 
+  // Highlight the drop zone while the user is dragging a file over it
   ['dragenter','dragover'].forEach(e =>
     dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.classList.add('drag-over'); })
   );
   ['dragleave','drop'].forEach(e =>
     dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.classList.remove('drag-over'); })
   );
+
+  // Accept a file dropped directly onto the zone
   dropZone.addEventListener('drop', e => {
     const f = e.dataTransfer.files;
     if (f[0]) { fileInput.files = f; fileLabel.textContent = f[0].name; }
   });
 
+  // Disable the button and show the spinner while the server is processing
   form.addEventListener('submit', () => {
     submitBtn.disabled    = true;
     submitBtn.textContent = 'Memproses...';

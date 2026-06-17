@@ -1,51 +1,50 @@
-"""
-Piano Playing Level Classifier — Flask API
-Ensemble prediction menggunakan semua 5 model BiLSTM (K-Fold)
+# Flask API for Piano Playing Level Classification
+# Receives a video file, runs MediaPipe hand tracking per frame,
+# extracts features, and runs ensemble inference across all 5 BiLSTM models.
+#
+# Endpoints:
+#   POST /predict      - accepts a video file, returns classification result as JSON
+#   GET  /video/<name> - streams an annotated video file
+#   GET  /health       - returns API status and number of loaded models
 
-Endpoint:
-  POST /predict       → upload video, kembalikan JSON hasil klasifikasi
-  GET  /video/<name>  → stream annotated video
-  GET  /health        → cek status API
-"""
-
+# Libraries
 import os
 import gc
 import uuid
+import subprocess
 import warnings
 warnings.filterwarnings("ignore")
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
-import subprocess
 import cv2
 import numpy as np
 import mediapipe as mp
 import tensorflow as tf
 import imageio.v2 as iio
-import imageio_ffmpeg              # untuk mendapatkan path binary FFmpeg bawaan
+import imageio_ffmpeg
 
 from flask import Flask, request, jsonify, send_file, abort
 from werkzeug.utils import secure_filename
 
-# =========================================================
-# KONFIGURASI
-# =========================================================
-BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR  = os.path.join(BASE_DIR, "..", "Tugas Akhir Ko Pat",
-                          "OUTPUT_PIANO_BILSTM", "best_model")
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+
+# Paths
+BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR   = os.path.join(BASE_DIR, "..", "Tugas Akhir Ko Pat",
+                            "OUTPUT_PIANO_BILSTM", "best_model")
+UPLOAD_DIR  = os.path.join(BASE_DIR, "uploads")
 ALLOWED_EXT = {"mp4", "mov", "avi", "mkv", "webm"}
-MAX_MB     = 200
+MAX_MB      = 200
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# =========================================================
-# PARAMETER FITUR (identik dengan notebook training)
-# =========================================================
-SEQUENCE_LENGTH = 30
-STRIDE          = 5
-FEATURE_SIZE    = 83   # 21×3 landmark + 10 sudut sendi + 10 jarak fingertip
 
+# Feature extraction parameters — must match the training notebook exactly
+SEQUENCE_LENGTH = 30   # number of frames per input sequence
+STRIDE          = 5    # step size when sliding the window across frames
+FEATURE_SIZE    = 83   # 21 landmarks x 3 coords + 10 joint angles + 10 fingertip distances
+
+# Joint triplets used to compute finger bend angles via dot product
 JOINTS = [
     [2,  1,  3], [3,  2,  4],
     [6,  5,  7], [7,  6,  8],
@@ -61,27 +60,25 @@ LABEL_DISPLAY = {
     "poor":             "Poor",
 }
 
-# warna BGR per label untuk overlay teks di video
+# BGR colors used when drawing the result label on the annotated video
 LABEL_COLOR = {
-    "good":             (86,  205, 86),   # hijau
-    "needs_improvement":(60,  180, 245),  # kuning-oranye → pakai kuning muda
-    "poor":             (60,  60,  239),  # merah
+    "good":             (86,  205, 86),
+    "needs_improvement":(60,  180, 245),
+    "poor":             (60,  60,  239),
 }
 
-# =========================================================
-# MEDIAPIPE
-# =========================================================
+
+# MediaPipe hand tracking modules
 mp_hands          = mp.solutions.hands
 mp_drawing        = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
 
-# custom drawing spec agar lebih jelas di video
+# Visual style for drawing hand landmarks and connections on each frame
 LANDMARK_SPEC   = mp_drawing.DrawingSpec(color=(0, 255, 255), thickness=2, circle_radius=4)
 CONNECTION_SPEC = mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=2)
 
-# =========================================================
-# LOAD SEMUA 5 MODEL SAAT STARTUP
-# =========================================================
+
+# Load all 5 fold models into memory at startup so inference requests are fast
 print("=" * 55)
 print("Loading ensemble models...")
 print("=" * 55)
@@ -94,18 +91,16 @@ for fold in range(1, 6):
         models.append(m)
         print(f"  [OK] Fold {fold}: {path}")
     else:
-        print(f"  [SKIP] Fold {fold}: tidak ditemukan — {path}")
+        print(f"  [SKIP] Fold {fold}: file not found at {path}")
 
 if not models:
-    raise RuntimeError("Tidak ada model yang berhasil dimuat. Periksa MODEL_DIR.")
+    raise RuntimeError("No models loaded. Check MODEL_DIR.")
 
-print(f"\nEnsemble siap: {len(models)} model dimuat.\n")
+print(f"\nEnsemble ready: {len(models)} models loaded.\n")
 
 
-# =========================================================
-# FEATURE EXTRACTION
-# =========================================================
 def calculate_angle(a, b, c):
+    """Compute the angle at point b formed by vectors b->a and b->c, in degrees."""
     a, b, c = np.array(a), np.array(b), np.array(c)
     ba, bc  = a - b, c - b
     cos = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-6)
@@ -113,6 +108,10 @@ def calculate_angle(a, b, c):
 
 
 def extract_frame_features(hand_landmarks):
+    """
+    Build the 83-dimensional feature vector for a single frame.
+    Concatenates raw landmark coordinates, joint angles, and fingertip distances.
+    """
     features = []
     coords   = []
 
@@ -123,28 +122,22 @@ def extract_frame_features(hand_landmarks):
     coords = np.array(coords)
 
     for joint in JOINTS:
-        features.append(calculate_angle(
-            coords[joint[0]], coords[joint[1]], coords[joint[2]]
-        ))
+        features.append(calculate_angle(coords[joint[0]], coords[joint[1]], coords[joint[2]]))
 
     fingertips = [4, 8, 12, 16, 20]
     for i in range(len(fingertips)):
         for j in range(i + 1, len(fingertips)):
-            features.append(float(np.linalg.norm(
-                coords[fingertips[i]] - coords[fingertips[j]]
-            )))
+            features.append(float(np.linalg.norm(coords[fingertips[i]] - coords[fingertips[j]])))
 
     return features
 
-# =========================================================
-# PASS 1 — ekstrak fitur + tulis raw annotated video
-# =========================================================
+
 def extract_and_annotate(input_path: str, raw_out: str) -> np.ndarray:
     """
-    Baca video input, jalankan MediaPipe per frame.
-    Gambar landmark + nomor fingertip + bounding box tangan.
-    Tulis ke raw_out (mp4v, belum di-encode H.264).
-    Kembalikan array fitur (n_frames, FEATURE_SIZE).
+    Pass 1: reads the input video frame by frame, runs MediaPipe hand detection,
+    draws landmarks and fingertip markers onto each frame, and writes the result
+    to raw_out using the mp4v codec. Returns the feature array of shape
+    (n_frames, FEATURE_SIZE) for use in prediction.
     """
     cap = cv2.VideoCapture(input_path)
 
@@ -175,7 +168,6 @@ def extract_and_annotate(input_path: str, raw_out: str) -> np.ndarray:
                 hand_lm  = results.multi_hand_landmarks[0]
                 features = extract_frame_features(hand_lm)
 
-                # --- gambar koneksi tangan ---
                 mp_drawing.draw_landmarks(
                     frame, hand_lm,
                     mp_hands.HAND_CONNECTIONS,
@@ -183,15 +175,15 @@ def extract_and_annotate(input_path: str, raw_out: str) -> np.ndarray:
                     CONNECTION_SPEC,
                 )
 
-                # --- sorot fingertip (landmark 4,8,12,16,20) ---
+                # Highlight fingertip landmarks with a filled circle
                 for tip_idx in [4, 8, 12, 16, 20]:
-                    lm  = hand_lm.landmark[tip_idx]
-                    cx  = int(lm.x * width)
-                    cy  = int(lm.y * height)
+                    lm = hand_lm.landmark[tip_idx]
+                    cx = int(lm.x * width)
+                    cy = int(lm.y * height)
                     cv2.circle(frame, (cx, cy), 10, (0, 255, 255), -1)
                     cv2.circle(frame, (cx, cy), 10, (0, 0, 0), 2)
 
-                # --- bounding box tangan ---
+                # Draw a bounding box around the detected hand
                 xs = [lm.x for lm in hand_lm.landmark]
                 ys = [lm.y for lm in hand_lm.landmark]
                 x1 = max(0, int(min(xs) * width)  - 15)
@@ -211,22 +203,20 @@ def extract_and_annotate(input_path: str, raw_out: str) -> np.ndarray:
 
     return np.array(all_features)
 
-# =========================================================
-# PASS 2 — label overlay + encode H.264 via imageio-ffmpeg
-# =========================================================
+
 def finalize_video(raw_path: str, final_path: str,
                    display: str, confidence: float, label: str) -> None:
     """
-    Baca raw_path (mp4v dari OpenCV), tambahkan label overlay per frame,
-    tulis final_path sebagai H.264 MP4 menggunakan imageio-ffmpeg
-    (bundled binary — tidak perlu install FFmpeg di sistem).
+    Pass 2: reads the raw annotated video, draws a semi-transparent label overlay
+    showing the classification result on every frame, then re-encodes to H.264
+    using imageio-ffmpeg's bundled binary so the output is playable in browsers.
+    H.264 requires even pixel dimensions, so frames are padded if necessary.
     """
     cap    = cv2.VideoCapture(raw_path)
     fps    = cap.get(cv2.CAP_PROP_FPS) or 30.0
     width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # H.264 memerlukan dimensi genap
     enc_w = width  + (width  % 2)
     enc_h = height + (height % 2)
 
@@ -250,9 +240,9 @@ def finalize_video(raw_path: str, final_path: str,
         codec="libx264",
         ffmpeg_log_level="quiet",
         output_params=[
-            "-pix_fmt",   "yuv420p",
-            "-movflags",  "+faststart",
-            "-preset",    "fast",
+            "-pix_fmt",  "yuv420p",
+            "-movflags", "+faststart",
+            "-preset",   "fast",
         ],
     )
 
@@ -261,7 +251,7 @@ def finalize_video(raw_path: str, final_path: str,
         if not ret:
             break
 
-        # --- label overlay ---
+        # Semi-transparent dark background behind the label text
         overlay = frame.copy()
         cv2.rectangle(overlay, (pad, pad), (pad + box_w, pad + box_h), (20, 20, 20), -1)
         cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
@@ -271,7 +261,6 @@ def finalize_video(raw_path: str, final_path: str,
         cv2.putText(frame, text2, (pad + 10, pad + 60),
                     font, scale2, (220, 220, 220), thick2, cv2.LINE_AA)
 
-        # padding dimensi jika ganjil, lalu BGR→RGB untuk imageio
         if enc_w != width or enc_h != height:
             frame = cv2.copyMakeBorder(frame, 0, enc_h - height, 0, enc_w - width,
                                        cv2.BORDER_CONSTANT, value=0)
@@ -280,54 +269,57 @@ def finalize_video(raw_path: str, final_path: str,
     cap.release()
     writer.close()
 
-# =========================================================
-# PASS 3 — mux audio dari video asli ke video anotasi
-# =========================================================
+
 def mux_audio(video_no_audio: str, audio_source: str, output_path: str) -> None:
     """
-    Gabungkan video teranotasi (tanpa audio) dengan audio dari video asli.
-    Menggunakan binary FFmpeg bawaan imageio-ffmpeg — tidak perlu install sistem.
+    Pass 3: copies the audio track from the original upload into the annotated video.
+    Uses the FFmpeg binary bundled with imageio-ffmpeg, so no system FFmpeg is needed.
+    Raises subprocess.CalledProcessError if the source has no audio track.
     """
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
     subprocess.run(
         [
             ffmpeg_exe, "-y",
-            "-i", video_no_audio,   # video H.264 tanpa audio
-            "-i", audio_source,     # video asli (sumber audio)
-            "-c:v", "copy",         # salin stream video apa adanya
-            "-c:a", "aac",          # encode audio ke AAC
-            "-map", "0:v:0",        # ambil video dari input pertama
-            "-map", "1:a:0",        # ambil audio dari input kedua
-            "-shortest",            # selesai saat stream terpendek habis
+            "-i", video_no_audio,
+            "-i", audio_source,
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-shortest",
             output_path,
         ],
         check=True,
         capture_output=True,
     )
 
-# =========================================================
-# ENSEMBLE PREDICTION
-# =========================================================
+
 def ensemble_predict(all_features: np.ndarray) -> dict:
+    """
+    Builds sliding-window sequences from the per-frame features, runs inference
+    on each of the 5 loaded models, and averages their softmax outputs (soft voting).
+    Returns the predicted label, confidence, and per-class probabilities.
+    """
     sequences = []
     for i in range(0, len(all_features) - SEQUENCE_LENGTH + 1, STRIDE):
         sequences.append(all_features[i : i + SEQUENCE_LENGTH])
 
+    # If the video is too short to fill one full window, pad with zeros
     if not sequences:
         padded = np.zeros((SEQUENCE_LENGTH, FEATURE_SIZE))
         n = min(len(all_features), SEQUENCE_LENGTH)
         padded[:n] = all_features[:n]
         sequences = [padded]
 
-    X = np.array(sequences)   # (n_seq, 30, 83)
+    X = np.array(sequences)
 
-    all_probs    = []
-    per_model    = []
+    all_probs = []
+    per_model = []
 
     for idx, model in enumerate(models):
-        preds = model.predict(X, verbose=0)   # (n_seq, 3)
-        avg   = np.mean(preds, axis=0)        # (3,)
+        preds = model.predict(X, verbose=0)
+        avg   = np.mean(preds, axis=0)
         all_probs.append(avg)
 
         fold_label = LABEL_NAMES[int(np.argmax(avg))]
@@ -340,7 +332,7 @@ def ensemble_predict(all_features: np.ndarray) -> dict:
             },
         })
 
-    ensemble_avg = np.mean(all_probs, axis=0)   # (3,)
+    ensemble_avg = np.mean(all_probs, axis=0)
     best_idx     = int(np.argmax(ensemble_avg))
     label        = LABEL_NAMES[best_idx]
     confidence   = float(ensemble_avg[best_idx])
@@ -357,23 +349,22 @@ def ensemble_predict(all_features: np.ndarray) -> dict:
         "model_count":   len(models),
     }
 
-# =========================================================
-# FLASK APP
-# =========================================================
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 
 
 def allowed_file(filename: str) -> bool:
-    return "." in filename and \
-           filename.rsplit(".", 1)[1].lower() in ALLOWED_EXT
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXT
 
 
-# ---------------------------------------------------------
-# POST /predict
-# ---------------------------------------------------------
 @app.route("/predict", methods=["POST"])
 def predict():
+    """
+    Accepts a multipart form upload with field name 'video'.
+    Runs the full three-pass pipeline (feature extraction, H.264 encoding, audio mux)
+    and returns a JSON object with the classification result and annotated video filename.
+    """
     if "video" not in request.files:
         return jsonify({"error": "Field 'video' tidak ditemukan dalam request."}), 400
 
@@ -385,44 +376,36 @@ def predict():
     if not allowed_file(file.filename):
         return jsonify({"error": f"Format tidak didukung. Gunakan: {', '.join(ALLOWED_EXT).upper()}"}), 400
 
-    uid         = uuid.uuid4().hex
-    # nama dasar dari file asli (tanpa ekstensi, karakter aman)
-    orig_stem   = os.path.splitext(secure_filename(file.filename))[0]
+    uid       = uuid.uuid4().hex
+    orig_stem = os.path.splitext(secure_filename(file.filename))[0]
 
     input_path  = os.path.join(UPLOAD_DIR, f"{uid}_input.mp4")
-    raw_path    = os.path.join(UPLOAD_DIR, f"{uid}_raw.mp4")       # pass 1 (mp4v, no audio)
-    silent_path = os.path.join(UPLOAD_DIR, f"{uid}_silent.mp4")    # pass 2 (H.264, no audio)
-    # final_path ditentukan setelah label diketahui
+    raw_path    = os.path.join(UPLOAD_DIR, f"{uid}_raw.mp4")
+    silent_path = os.path.join(UPLOAD_DIR, f"{uid}_silent.mp4")
 
     file.save(input_path)
 
     try:
-        # --- Pass 1: ekstrak fitur + gambar landmark MediaPipe ---
         all_features = extract_and_annotate(input_path, raw_path)
 
         if len(all_features) == 0:
             return jsonify({"error": "Tidak ada frame yang berhasil diekstrak dari video."}), 422
 
-        # --- Prediksi ensemble ---
         result = ensemble_predict(all_features)
 
-        # --- nama file final: (nama_file_awal)_(hasil_klasifikasi).mp4 ---
-        final_name  = f"{orig_stem}_{result['label']}.mp4"
-        final_path  = os.path.join(UPLOAD_DIR, final_name)
+        # Output filename encodes both the original name and the predicted label
+        final_name = f"{orig_stem}_{result['label']}.mp4"
+        final_path = os.path.join(UPLOAD_DIR, final_name)
 
-        # --- Pass 2: label overlay + encode H.264 (belum ada audio) ---
-        finalize_video(
-            raw_path, silent_path,
-            result["display"], result["confidence"], result["label"]
-        )
+        finalize_video(raw_path, silent_path,
+                       result["display"], result["confidence"], result["label"])
         os.remove(raw_path)
 
-        # --- Pass 3: mux audio dari video asli ---
         try:
             mux_audio(silent_path, input_path, final_path)
             os.remove(silent_path)
         except Exception:
-            # jika video asli tidak punya audio, pakai video tanpa audio
+            # Source video has no audio track; use the silent version as-is
             os.rename(silent_path, final_path)
 
         result["annotated_video"] = final_name
@@ -439,35 +422,21 @@ def predict():
         gc.collect()
 
 
-# ---------------------------------------------------------
-# GET /video/<filename>
-# ---------------------------------------------------------
 @app.route("/video/<filename>")
 def serve_video(filename):
+    """Serves an annotated video file from the uploads directory. Supports HTTP Range requests for seeking."""
     safe = secure_filename(filename)
     path = os.path.join(UPLOAD_DIR, safe)
     if not os.path.isfile(path):
         abort(404)
-    return send_file(
-        path,
-        mimetype="video/mp4",
-        conditional=True,   # support Range requests (seek)
-    )
+    return send_file(path, mimetype="video/mp4", conditional=True)
 
 
-# ---------------------------------------------------------
-# GET /health
-# ---------------------------------------------------------
 @app.route("/health")
 def health():
-    return jsonify({
-        "status":        "ok",
-        "models_loaded": len(models),
-    }), 200
+    """Returns a simple status response indicating how many models are loaded."""
+    return jsonify({"status": "ok", "models_loaded": len(models)}), 200
 
 
-# =========================================================
-# ENTRY POINT
-# =========================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
