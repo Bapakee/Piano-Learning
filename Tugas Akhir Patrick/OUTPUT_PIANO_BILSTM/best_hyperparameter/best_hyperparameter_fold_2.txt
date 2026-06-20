@@ -1,7 +1,7 @@
 === BEST HYPERPARAMETER FOLD 2 ===
 
 lstm_1: 64
-lstm_2: 32
-dense_units: 160
-dropout: 0.4
+lstm_2: 64
+dense_units: 128
+dropout: 0.30000000000000004
 learning_rate: 0.001
