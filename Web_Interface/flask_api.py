@@ -30,7 +30,7 @@ from werkzeug.utils import secure_filename
 
 # Paths
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR   = os.path.join(BASE_DIR, "..", "Tugas Akhir Ko Pat",
+MODEL_DIR   = os.path.join(BASE_DIR, "..", "Tugas Akhir Patrick",
                             "OUTPUT_PIANO_BILSTM", "best_model")
 UPLOAD_DIR  = os.path.join(BASE_DIR, "uploads")
 ALLOWED_EXT = {"mp4", "mov", "avi", "mkv", "webm"}
