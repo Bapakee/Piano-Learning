@@ -505,9 +505,24 @@ if (fileInput) {
     dropZone.style.display       = 'block';
   }
 
+  const ALLOWED_MIME = ['video/mp4','video/quicktime','video/x-msvideo','video/x-matroska','video/webm'];
+
+  function validateFile(file) {
+    if (!ALLOWED_MIME.includes(file.type) && file.type !== '') {
+      alert('Format file tidak didukung: ' + file.type + '\nGunakan MP4, MOV, AVI, MKV, atau WEBM.');
+      return false;
+    }
+    if (file.size > <?= MAX_FILE_MB ?> * 1024 * 1024) {
+      alert('Ukuran file melebihi batas maksimum <?= MAX_FILE_MB ?> MB.');
+      return false;
+    }
+    return true;
+  }
+
   fileInput.addEventListener('change', () => {
     const file = fileInput.files[0];
-    if (file) showPreview(file);
+    if (file && validateFile(file)) showPreview(file);
+    else fileInput.value = '';
   });
 
   // "Ganti Video" button resets the view back to the drop zone
@@ -524,7 +539,7 @@ if (fileInput) {
   // Accept a file dropped directly onto the zone and trigger the same preview logic
   dropZone.addEventListener('drop', e => {
     const f = e.dataTransfer.files;
-    if (f[0]) {
+    if (f[0] && validateFile(f[0])) {
       fileInput.files = f;
       fileInput.dispatchEvent(new Event('change'));
     }

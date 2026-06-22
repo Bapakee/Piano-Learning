@@ -390,10 +390,42 @@ def predict():
     file.save(input_path)
 
     try:
+        # Check 1: pastikan OpenCV bisa membuka file (file tidak rusak)
+        cap_check = cv2.VideoCapture(input_path)
+        if not cap_check.isOpened():
+            cap_check.release()
+            return jsonify({"error": "File video tidak dapat dibaca. Pastikan file tidak rusak dan formatnya didukung."}), 422
+
+        vid_w      = int(cap_check.get(cv2.CAP_PROP_FRAME_WIDTH))
+        vid_h      = int(cap_check.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        vid_fps    = cap_check.get(cv2.CAP_PROP_FPS)
+        vid_frames = int(cap_check.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap_check.release()
+
+        # Check 2: dimensi video harus valid
+        if vid_w == 0 or vid_h == 0:
+            return jsonify({"error": "Video memiliki dimensi tidak valid (lebar atau tinggi bernilai 0)."}), 422
+
+        # Check 3: video harus cukup panjang untuk membentuk minimal 1 sequence
+        if 0 < vid_frames < SEQUENCE_LENGTH:
+            return jsonify({
+                "error": f"Video terlalu pendek. Dibutuhkan minimal {SEQUENCE_LENGTH} frame, "
+                         f"video ini hanya memiliki {vid_frames} frame."
+            }), 422
+
         all_features = extract_and_annotate(input_path, raw_path)
 
         if len(all_features) == 0:
             return jsonify({"error": "Tidak ada frame yang berhasil diekstrak dari video."}), 422
+
+        # Check 4: minimal ada 1 frame dengan tangan terdeteksi
+        # Frame tanpa deteksi tangan diisi dengan vektor nol
+        hand_frames = sum(1 for f in all_features if any(v != 0.0 for v in f))
+        if hand_frames == 0:
+            return jsonify({
+                "error": "Tidak ada tangan yang terdeteksi di seluruh video. "
+                         "Pastikan tangan terlihat jelas dan cukup terang di kamera."
+            }), 422
 
         result = ensemble_predict(all_features)
 
