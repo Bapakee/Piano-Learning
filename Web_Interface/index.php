@@ -60,9 +60,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
         $error = 'File terlalu besar. Maksimum ' . MAX_FILE_MB . ' MB.';
     } elseif (!in_array(
         strtolower(pathinfo($file['name'], PATHINFO_EXTENSION)),
-        ['mp4', 'mov', 'avi', 'mkv', 'webm'], true
+        ['mp4', 'mov'], true
     )) {
-        $error = 'Format file tidak didukung. Gunakan MP4, MOV, AVI, MKV, atau WEBM.';
+        $error = 'Format file tidak didukung. Gunakan MP4 atau MOV.';
     } else {
         $data = call_flask_api($file);
 
@@ -383,7 +383,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     <div id="dropZone" class="drop-zone">
       <label for="videoInput" style="display:block;cursor:pointer;">
         <p class="dz-label"><span>Klik untuk memilih file</span> atau seret ke sini</p>
-        <p class="dz-hint">MP4, MOV, AVI, MKV, WEBM &nbsp;&mdash;&nbsp; Maks. <?= MAX_FILE_MB ?> MB</p>
+        <p class="dz-hint">MP4, MOV &nbsp;&mdash;&nbsp; Maks. <?= MAX_FILE_MB ?> MB</p>
       </label>
     </div>
 
@@ -505,7 +505,7 @@ if (fileInput) {
     dropZone.style.display       = 'block';
   }
 
-  const ALLOWED_MIME = ['video/mp4','video/quicktime','video/x-msvideo','video/x-matroska','video/webm'];
+  const ALLOWED_MIME = ['video/mp4','video/quicktime'];
 
   function validateFile(file) {
     if (!ALLOWED_MIME.includes(file.type) && file.type !== '') {
