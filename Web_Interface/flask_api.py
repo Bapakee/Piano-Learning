@@ -221,16 +221,17 @@ def finalize_video(raw_path: str, final_path: str,
     enc_h = height + (height % 2)
 
     color  = LABEL_COLOR.get(label, (255, 255, 255))
-    text1  = f"Level: {display}"
+    # Primary text: the human-readable class name (e.g. "Good", "Needs Improvement")
+    text1  = display
     text2  = f"Confidence: {confidence:.1f}%"
-    font   = cv2.FONT_HERSHEY_SIMPLEX
-    scale1 = max(0.8,  width / 900)
-    scale2 = max(0.55, width / 1300)
-    thick1 = max(2, int(width / 480))
-    thick2 = max(1, int(width / 800))
-    pad    = 10
-    box_h  = 70
-    box_w  = max(350, int(width * 0.42))
+    font   = cv2.FONT_HERSHEY_DUPLEX
+    scale1 = max(1.0,  width / 720)
+    scale2 = max(0.5,  width / 1300)
+    thick1 = max(2, int(width / 400))
+    thick2 = max(1, int(width / 900))
+    pad    = 12
+    box_h  = 72
+    box_w  = max(320, int(width * 0.40))
 
     writer = iio.get_writer(
         final_path,
@@ -251,15 +252,18 @@ def finalize_video(raw_path: str, final_path: str,
         if not ret:
             break
 
-        # Semi-transparent dark background behind the label text
+        # Semi-transparent dark background pill behind the label text
         overlay = frame.copy()
-        cv2.rectangle(overlay, (pad, pad), (pad + box_w, pad + box_h), (20, 20, 20), -1)
-        cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
-        cv2.rectangle(frame, (pad, pad), (pad + box_w, pad + box_h), color, 2)
-        cv2.putText(frame, text1, (pad + 10, pad + 38),
+        cv2.rectangle(overlay, (pad, pad), (pad + box_w, pad + box_h), (15, 15, 15), -1)
+        cv2.addWeighted(overlay, 0.60, frame, 0.40, 0, frame)
+        # Colored left-side accent bar matching the label
+        cv2.rectangle(frame, (pad, pad), (pad + 5, pad + box_h), color, -1)
+        # Class name in the label color, large and prominent
+        cv2.putText(frame, text1, (pad + 14, pad + 44),
                     font, scale1, color, thick1, cv2.LINE_AA)
-        cv2.putText(frame, text2, (pad + 10, pad + 60),
-                    font, scale2, (220, 220, 220), thick2, cv2.LINE_AA)
+        # Confidence in a neutral light color beneath the class name
+        cv2.putText(frame, text2, (pad + 14, pad + 64),
+                    font, scale2, (200, 200, 200), thick2, cv2.LINE_AA)
 
         if enc_w != width or enc_h != height:
             frame = cv2.copyMakeBorder(frame, 0, enc_h - height, 0, enc_w - width,

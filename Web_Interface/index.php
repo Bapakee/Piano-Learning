@@ -195,6 +195,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     word-break: break-all;
   }
 
+  /* VIDEO PREVIEW */
+  .preview-section {
+    display: none;
+    margin-top: 16px;
+  }
+  .preview-section h3 {
+    font-size: .78rem;
+    color: #999;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-bottom: 8px;
+  }
+  .preview-wrap {
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #000;
+  }
+  .preview-wrap video {
+    width: 100%;
+    max-height: 360px;
+    display: block;
+  }
+
   /* BUTTON */
   .btn {
     display: block;
@@ -362,6 +386,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     </div>
     <div class="file-name-display" id="fileNameDisplay"></div>
 
+    <div class="preview-section" id="previewSection">
+      <h3>Preview Video</h3>
+      <div class="preview-wrap">
+        <video id="previewVideo" controls playsinline muted></video>
+      </div>
+    </div>
+
     <button type="submit" class="btn btn-primary" id="submitBtn">Analisis Video</button>
 
     <div class="loading-wrap" id="loadingWrap">
@@ -444,9 +475,22 @@ const loading   = document.getElementById('loadingWrap');
 
 // Upload form is only rendered when there is no result to display
 if (fileInput) {
-  // Show the selected filename beneath the drop zone
+  const previewSection = document.getElementById('previewSection');
+  const previewVideo   = document.getElementById('previewVideo');
+  let   previewObjectURL = null;
+
+  // Show the selected filename and a local video preview beneath the drop zone
   fileInput.addEventListener('change', () => {
-    if (fileInput.files[0]) fileLabel.textContent = fileInput.files[0].name;
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    fileLabel.textContent = file.name;
+
+    // Release the previous object URL to free browser memory
+    if (previewObjectURL) URL.revokeObjectURL(previewObjectURL);
+    previewObjectURL    = URL.createObjectURL(file);
+    previewVideo.src    = previewObjectURL;
+    previewSection.style.display = 'block';
   });
 
   // Highlight the drop zone while the user is dragging a file over it
@@ -457,10 +501,13 @@ if (fileInput) {
     dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.classList.remove('drag-over'); })
   );
 
-  // Accept a file dropped directly onto the zone
+  // Accept a file dropped directly onto the zone and trigger the same preview logic
   dropZone.addEventListener('drop', e => {
     const f = e.dataTransfer.files;
-    if (f[0]) { fileInput.files = f; fileLabel.textContent = f[0].name; }
+    if (f[0]) {
+      fileInput.files = f;
+      fileInput.dispatchEvent(new Event('change'));
+    }
   });
 
   // Disable the button and show the spinner while the server is processing
