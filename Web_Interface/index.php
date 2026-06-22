@@ -509,7 +509,7 @@ if (fileInput) {
 
   function validateFile(file) {
     if (!ALLOWED_MIME.includes(file.type) && file.type !== '') {
-      alert('Format file tidak didukung: ' + file.type + '\nGunakan MP4, MOV, AVI, MKV, atau WEBM.');
+      alert('Format file tidak didukung: ' + file.type + '\nGunakan MP4, MOV.');
       return false;
     }
     if (file.size > <?= MAX_FILE_MB ?> * 1024 * 1024) {
