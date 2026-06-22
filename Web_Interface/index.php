@@ -187,18 +187,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     color: #999;
     margin-top: 6px;
   }
-  .file-name-display {
-    margin-top: 10px;
-    font-size: .8rem;
-    color: #555;
-    min-height: 1.2em;
-    word-break: break-all;
-  }
-
   /* VIDEO PREVIEW */
   .preview-section {
     display: none;
-    margin-top: 16px;
   }
   .preview-section h3 {
     font-size: .78rem;
@@ -218,6 +209,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     max-height: 360px;
     display: block;
   }
+  .btn-secondary {
+    background: #fff;
+    color: #1a1a1a;
+    border: 1px solid #ccc;
+    margin-top: 10px;
+  }
+  .btn-secondary:hover { background: #f5f5f5; border-color: #999; }
 
   /* BUTTON */
   .btn {
@@ -379,21 +377,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
   <?php endif; ?>
 
   <form id="uploadForm" method="POST" enctype="multipart/form-data">
-    <div class="drop-zone" id="dropZone">
-      <input type="file" name="video" id="videoInput" accept="video/*" required>
-      <p class="dz-label"><span>Klik untuk memilih file</span> atau seret ke sini</p>
-      <p class="dz-hint">MP4, MOV, AVI, MKV, WEBM &nbsp;&mdash;&nbsp; Maks. <?= MAX_FILE_MB ?> MB</p>
+    <!-- hidden input; triggered programmatically by the re-upload button -->
+    <input type="file" name="video" id="videoInput" accept="video/*" required style="display:none">
+
+    <div id="dropZone" class="drop-zone">
+      <label for="videoInput" style="display:block;cursor:pointer;">
+        <p class="dz-label"><span>Klik untuk memilih file</span> atau seret ke sini</p>
+        <p class="dz-hint">MP4, MOV, AVI, MKV, WEBM &nbsp;&mdash;&nbsp; Maks. <?= MAX_FILE_MB ?> MB</p>
+      </label>
     </div>
-    <div class="file-name-display" id="fileNameDisplay"></div>
 
     <div class="preview-section" id="previewSection">
       <h3>Preview Video</h3>
       <div class="preview-wrap">
         <video id="previewVideo" controls playsinline muted></video>
       </div>
+      <button type="button" class="btn btn-secondary" id="reuploadBtn">Ganti Video</button>
     </div>
 
-    <button type="submit" class="btn btn-primary" id="submitBtn">Analisis Video</button>
+    <button type="submit" class="btn btn-primary" id="submitBtn" style="display:none">Analisis Video</button>
 
     <div class="loading-wrap" id="loadingWrap">
       <div class="spinner"></div>
@@ -466,32 +468,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
 <footer>Patrick Andersen Kanginan &nbsp;&mdash;&nbsp; 160421123</footer>
 
 <script>
-const dropZone  = document.getElementById('dropZone');
-const fileInput = document.getElementById('videoInput');
-const fileLabel = document.getElementById('fileNameDisplay');
-const form      = document.getElementById('uploadForm');
-const submitBtn = document.getElementById('submitBtn');
-const loading   = document.getElementById('loadingWrap');
+const dropZone     = document.getElementById('dropZone');
+const fileInput    = document.getElementById('videoInput');
+const form         = document.getElementById('uploadForm');
+const submitBtn    = document.getElementById('submitBtn');
+const loading      = document.getElementById('loadingWrap');
 
 // Upload form is only rendered when there is no result to display
 if (fileInput) {
   const previewSection = document.getElementById('previewSection');
   const previewVideo   = document.getElementById('previewVideo');
+  const reuploadBtn    = document.getElementById('reuploadBtn');
   let   previewObjectURL = null;
 
-  // Show the selected filename and a local video preview beneath the drop zone
-  fileInput.addEventListener('change', () => {
-    const file = fileInput.files[0];
-    if (!file) return;
-
-    fileLabel.textContent = file.name;
-
+  function showPreview(file) {
     // Release the previous object URL to free browser memory
     if (previewObjectURL) URL.revokeObjectURL(previewObjectURL);
-    previewObjectURL    = URL.createObjectURL(file);
-    previewVideo.src    = previewObjectURL;
+    previewObjectURL = URL.createObjectURL(file);
+
+    previewVideo.src = previewObjectURL;
+    dropZone.style.display     = 'none';
     previewSection.style.display = 'block';
+    submitBtn.style.display    = 'block';
+  }
+
+  function resetToDropZone() {
+    // Clear the file input so a new selection can be made
+    fileInput.value = '';
+    if (previewObjectURL) {
+      URL.revokeObjectURL(previewObjectURL);
+      previewObjectURL = null;
+    }
+    previewVideo.src             = '';
+    previewSection.style.display = 'none';
+    submitBtn.style.display      = 'none';
+    dropZone.style.display       = 'block';
+  }
+
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files[0];
+    if (file) showPreview(file);
   });
+
+  // "Ganti Video" button resets the view back to the drop zone
+  reuploadBtn.addEventListener('click', resetToDropZone);
 
   // Highlight the drop zone while the user is dragging a file over it
   ['dragenter','dragover'].forEach(e =>
