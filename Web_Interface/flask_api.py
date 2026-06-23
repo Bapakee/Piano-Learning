@@ -34,7 +34,7 @@ MODEL_DIR   = os.path.join(BASE_DIR, "..", "Tugas Akhir Patrick",
                             "OUTPUT_PIANO_BILSTM", "best_model")
 UPLOAD_DIR  = os.path.join(BASE_DIR, "uploads")
 ALLOWED_EXT = {"mp4", "mov"}
-MAX_MB      = 200
+MAX_MB      = 50
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 

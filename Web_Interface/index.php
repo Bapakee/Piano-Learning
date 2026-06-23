@@ -1,7 +1,7 @@
 <?php
 // Base URL of the Flask API and the maximum allowed upload size in megabytes
 define('FLASK_URL',   'http://localhost:5000');
-define('MAX_FILE_MB', 200);
+define('MAX_FILE_MB', 50);
 
 // Sends the uploaded video to the Flask /predict endpoint via cURL
 // and returns the decoded JSON response as an associative array.
