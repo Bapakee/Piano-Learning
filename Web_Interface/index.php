@@ -336,6 +336,122 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     display: block;
   }
 
+  /* BADGE TOP ROW — label + info icon */
+  .badge-top-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* INFO ICON BUTTON */
+  .info-btn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+    color: #888;
+    flex-shrink: 0;
+  }
+  .info-btn:hover { color: #333; }
+  .info-tooltip {
+    display: none;
+    position: absolute;
+    left: 26px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: #1a1a1a;
+    color: #f5f5f5;
+    font-size: .78rem;
+    line-height: 1.5;
+    padding: 10px 14px;
+    border-radius: 6px;
+    width: 260px;
+    z-index: 10;
+    box-shadow: 0 4px 16px rgba(0,0,0,.2);
+  }
+  .info-tooltip::before {
+    content: '';
+    position: absolute;
+    right: 100%;
+    top: 50%;
+    transform: translateY(-50%);
+    border: 6px solid transparent;
+    border-right-color: #1a1a1a;
+  }
+  .info-btn:hover .info-tooltip,
+  .info-btn:focus .info-tooltip { display: block; }
+
+  /* DETECT STATS */
+  .detect-stats {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+  }
+  .stat-box {
+    flex: 1;
+    min-width: 100px;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 14px 12px;
+    text-align: center;
+  }
+  .stat-val {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: #1a1a1a;
+  }
+  .stat-lbl {
+    font-size: .72rem;
+    color: #999;
+    margin-top: 4px;
+  }
+
+  /* NOTES GRID */
+  .notes-section, .finger-section { margin-bottom: 24px; }
+  .notes-section h3, .finger-section h3 {
+    font-size: .78rem;
+    color: #999;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-bottom: 12px;
+  }
+  .notes-grid {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .note-card {
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 12px 16px;
+    text-align: center;
+    min-width: 70px;
+  }
+  .note-name {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #1a1a1a;
+  }
+  .note-pct {
+    font-size: .85rem;
+    font-weight: 600;
+    color: #444;
+    margin-top: 2px;
+  }
+  .note-count {
+    font-size: .72rem;
+    color: #999;
+    margin-top: 2px;
+  }
+
+  /* ANNOTATION HINT */
+  .annot-hint {
+    font-size: .8rem;
+    color: #777;
+    margin-bottom: 4px;
+  }
+
   /* BACK LINK */
   .back-link {
     max-width: 640px;
@@ -410,6 +526,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
   $css      = label_css($result['label']);
   $probs    = $result['probabilities'];
   $n_models = $result['model_count'] ?? 5;
+  $expl     = htmlspecialchars($result['explanation'] ?? '');
+  $analysis = $result['analysis'] ?? [];
   $fill_map = [
     'good'             => 'fill-good',
     'needs_improvement'=> 'fill-needs',
@@ -421,12 +539,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     'poor'             => 'Poor',
   ];
 ?>
+
 <!-- HASIL KLASIFIKASI -->
 <div class="card">
   <h2>Hasil Klasifikasi</h2>
 
   <div class="result-badge <?= $css ?>">
-    <div class="badge-label"><?= htmlspecialchars($result['display']) ?></div>
+    <div class="badge-top-row">
+      <div class="badge-label"><?= htmlspecialchars($result['display']) ?></div>
+      <div class="info-btn" tabindex="0" aria-label="Penjelasan hasil">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10 9v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <circle cx="10" cy="6.5" r="0.75" fill="currentColor"/>
+        </svg>
+        <div class="info-tooltip"><?= $expl ?></div>
+      </div>
+    </div>
     <div class="badge-meta">
       Confidence: <?= $result['confidence'] ?>% &nbsp;&mdash;&nbsp; Ensemble dari <?= $n_models ?> model
     </div>
@@ -446,19 +575,85 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
       <?php endforeach; ?>
     </div>
   </div>
+</div>
 
-  <?php if ($video_url): ?>
-  <div class="video-section">
-    <h3>Video Anotasi MediaPipe</h3>
-    <div class="video-wrap">
-      <video controls playsinline>
-        <source src="<?= htmlspecialchars($video_url) ?>" type="video/mp4">
-        Browser Anda tidak mendukung pemutaran video.
-      </video>
+<?php if (!empty($analysis)): ?>
+<!-- PROSES DETEKSI -->
+<div class="card">
+  <h2>Proses Deteksi</h2>
+
+  <!-- Statistik Frame -->
+  <div class="detect-stats">
+    <div class="stat-box">
+      <div class="stat-val"><?= $analysis['total_frames'] ?></div>
+      <div class="stat-lbl">Total Frame</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-val"><?= $analysis['detection_frames'] ?></div>
+      <div class="stat-lbl">Frame Terdeteksi</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-val"><?= $analysis['detection_rate'] ?>%</div>
+      <div class="stat-lbl">Detection Rate</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-val"><?= $analysis['simultaneous_press_frames'] ?></div>
+      <div class="stat-lbl">Frame 2+ Jari Sekaligus</div>
+    </div>
+  </div>
+
+  <?php if (!empty($analysis['notes_pressed'])): ?>
+  <!-- Not yang Terdeteksi Ditekan -->
+  <div class="notes-section">
+    <h3>Not yang Terdeteksi Ditekan</h3>
+    <div class="notes-grid">
+      <?php foreach ($analysis['notes_pressed'] as $np): ?>
+      <div class="note-card">
+        <div class="note-name"><?= htmlspecialchars($np['note']) ?></div>
+        <div class="note-pct"><?= $np['pct'] ?>%</div>
+        <div class="note-count"><?= $np['count'] ?> frame</div>
+      </div>
+      <?php endforeach; ?>
+    </div>
+  </div>
+  <?php endif; ?>
+
+  <?php if (!empty($analysis['finger_activity'])): ?>
+  <!-- Aktivitas Per Jari -->
+  <div class="finger-section">
+    <h3>Aktivitas Per Jari</h3>
+    <div class="prob-bars">
+      <?php foreach ($analysis['finger_activity'] as $finger => $pct): ?>
+      <div class="prob-row">
+        <span class="prob-name" style="width:140px"><?= htmlspecialchars($finger) ?></span>
+        <div class="prob-track">
+          <div class="prob-fill" style="width:<?= $pct ?>%; background:#1a1a1a;"></div>
+        </div>
+        <span class="prob-pct"><?= $pct ?>%</span>
+      </div>
+      <?php endforeach; ?>
     </div>
   </div>
   <?php endif; ?>
 </div>
+<?php endif; ?>
+
+<?php if ($video_url): ?>
+<!-- VIDEO ANOTASI -->
+<div class="card">
+  <h2>Video Anotasi MediaPipe</h2>
+  <p class="annot-hint">
+    Landmark diberi nomor 0–20. Ujung jari (<span style="color:#c00">merah</span>) = jari sedang menekan tuts.
+    Huruf di atas ujung jari menunjukkan not yang diprediksi ditekan.
+  </p>
+  <div class="video-wrap" style="margin-top:12px">
+    <video controls playsinline>
+      <source src="<?= htmlspecialchars($video_url) ?>" type="video/mp4">
+      Browser Anda tidak mendukung pemutaran video.
+    </video>
+  </div>
+</div>
+<?php endif; ?>
 
 <div class="back-link">
   <a href="index.php">Kembali &amp; analisis video lain</a>

@@ -13,6 +13,7 @@ import gc
 import uuid
 import subprocess
 import warnings
+from collections import deque
 warnings.filterwarnings("ignore")
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -65,6 +66,125 @@ LABEL_COLOR = {
     "good":             (86,  205, 86),
     "needs_improvement":(60,  180, 245),
     "poor":             (60,  60,  239),
+}
+
+# Fingertip landmark indices and finger names (no fixed note — note detected from key position)
+FINGER_INFO = [
+    (4,  "Ibu Jari"),
+    (8,  "Telunjuk"),
+    (12, "Jari Tengah"),
+    (16, "Jari Manis"),
+    (20, "Kelingking"),
+]
+
+# White key note names cycling left-to-right on keyboard
+WHITE_NOTES = ['C', 'D', 'E', 'F', 'G', 'A', 'B']
+
+
+class FingertipPressTracker:
+    """
+    Detects piano key presses using per-fingertip Y-velocity RELATIVE to the wrist.
+
+    Why velocity relative to wrist?
+      - The wrist moves with the whole hand. Subtracting wrist velocity isolates
+        only the individual finger movement, removing false positives from hand shift.
+      - When pressing: dy_finger >> dy_wrist  (finger moves down, wrist stays put)
+      - When releasing: dy_finger << dy_wrist (finger moves up)
+
+    State machine per finger:
+      IDLE      → PRESSING  : relative velocity > press_thr (moving down)
+      PRESSING  → PRESSED   : sustained downward for CONFIRM_FRAMES frames
+      PRESSING  → IDLE      : quick reversal before confirm (accidental touch)
+      PRESSED   → RELEASING : relative velocity < -release_thr (moving up)
+      RELEASING → IDLE      : velocity near zero (back at rest)
+      RELEASING → PRESSING  : pressed again before fully released
+
+    Thresholds scale with hand height (wrist → middle MCP distance) so the
+    same code works for different hand sizes and camera distances.
+    """
+    SMOOTH         = 3    # frames to average for velocity
+    CONFIRM_FRAMES = 3    # frames of downward motion before declaring PRESSED
+
+    _MCP = {4: 2, 8: 5, 12: 9, 16: 13, 20: 17}
+
+    def __init__(self):
+        self.tip_y   = {idx: deque(maxlen=10) for idx, _ in FINGER_INFO}
+        self.wrist_y = deque(maxlen=10)
+        self.states  = {idx: 'idle' for idx, _ in FINGER_INFO}
+        self.press_f = {idx: 0      for idx, _ in FINGER_INFO}
+
+    def _velocity(self, buf) -> float:
+        """Average frame-to-frame delta over the last SMOOTH entries."""
+        h = list(buf)
+        if len(h) < 2:
+            return 0.0
+        diffs = [h[i] - h[i-1] for i in range(max(1, len(h) - self.SMOOTH), len(h))]
+        return float(np.mean(diffs)) if diffs else 0.0
+
+    def update(self, hand_lm) -> dict:
+        """
+        Call once per frame with the detected hand landmarks.
+        Returns {tip_idx: bool} — True = finger is currently pressing a key.
+        """
+        wrist_y = hand_lm.landmark[0].y
+        self.wrist_y.append(wrist_y)
+        dw = self._velocity(self.wrist_y)           # whole-hand vertical drift
+
+        # Adaptive thresholds based on hand size
+        mid_mcp_y  = hand_lm.landmark[9].y          # middle finger MCP
+        hand_h     = abs(wrist_y - mid_mcp_y) or 0.1
+        press_thr  = hand_h * 0.04                  # 4% of hand height per frame
+        rel_thr    = press_thr * 0.50               # release threshold (smaller)
+
+        result = {}
+        for tip_idx, _ in FINGER_INFO:
+            y = hand_lm.landmark[tip_idx].y
+            self.tip_y[tip_idx].append(y)
+
+            dt     = self._velocity(self.tip_y[tip_idx])
+            dy_rel = dt - dw                        # finger velocity minus hand drift
+
+            state = self.states[tip_idx]
+
+            if state == 'idle':
+                if dy_rel > press_thr:
+                    state = 'pressing'
+                    self.press_f[tip_idx] = 1
+
+            elif state == 'pressing':
+                self.press_f[tip_idx] += 1
+                if self.press_f[tip_idx] >= self.CONFIRM_FRAMES:
+                    state = 'pressed'
+                elif dy_rel < -rel_thr:             # reversed before confirm = skip
+                    state = 'idle'
+
+            elif state == 'pressed':
+                if dy_rel < -rel_thr:
+                    state = 'releasing'
+
+            elif state == 'releasing':
+                if dy_rel > press_thr:              # pressed again immediately
+                    state = 'pressing'
+                    self.press_f[tip_idx] = 1
+                elif abs(dy_rel) < press_thr * 0.4:
+                    state = 'idle'
+
+            self.states[tip_idx] = state
+            result[tip_idx] = state in ('pressing', 'pressed')
+
+        return result
+
+# Short explanation shown in the UI info tooltip for each classification label
+LABEL_EXPLANATION = {
+    "good":
+        "Posisi dan teknik jari konsisten sepanjang video. "
+        "Transisi antar not berjalan lancar, tuts ditekan dengan tepat dan teratur.",
+    "needs_improvement":
+        "Terdapat beberapa ketidakkonsistenan posisi jari atau teknik menekan tuts. "
+        "Perlu latihan lebih lanjut agar transisi antar not lebih mulus.",
+    "poor":
+        "Posisi tangan dan teknik menekan tuts perlu banyak perbaikan. "
+        "Banyak frame menunjukkan posisi jari yang tidak ideal atau tidak konsisten.",
 }
 
 
@@ -132,12 +252,41 @@ def extract_frame_features(hand_landmarks):
     return features
 
 
-def extract_and_annotate(input_path: str, raw_out: str) -> np.ndarray:
+def note_from_x_rank(tip_idx: int, hand_lm) -> str:
+    """
+    Assign a piano note based on the fingertip's left-to-right rank
+    among all 5 fingertips. Leftmost = lowest note (C), rightmost = G.
+    """
+    sorted_tips = sorted(FINGER_INFO, key=lambda fi: hand_lm.landmark[fi[0]].x)
+    rank = next(
+        (i for i, (idx, _) in enumerate(sorted_tips) if idx == tip_idx),
+        0
+    )
+    return WHITE_NOTES[rank % len(WHITE_NOTES)]
+
+
+def detect_pressed_fingers(hand_lm, pressing_map: dict) -> list:
+    """
+    For each finger confirmed pressing by the velocity tracker,
+    assign a note based on its X-rank among all fingertips.
+    """
+    pressed = []
+    for tip_idx, fname in FINGER_INFO:
+        if not pressing_map.get(tip_idx, False):
+            continue
+        note = note_from_x_rank(tip_idx, hand_lm)
+        pressed.append({"tip_idx": tip_idx, "finger": fname, "note": note})
+    return pressed
+
+
+def extract_and_annotate(input_path: str, raw_out: str):
     """
     Pass 1: reads the input video frame by frame, runs MediaPipe hand detection,
-    draws landmarks and fingertip markers onto each frame, and writes the result
-    to raw_out using the mp4v codec. Returns the feature array of shape
-    (n_frames, FEATURE_SIZE) for use in prediction.
+    draws landmarks (with index labels) and fingertip markers onto each frame,
+    and writes the result to raw_out using the mp4v codec.
+    Returns a tuple of:
+      - all_features: np.ndarray of shape (n_frames, FEATURE_SIZE)
+      - finger_activity: list of per-frame pressed-finger dicts
     """
     cap = cv2.VideoCapture(input_path)
 
@@ -148,7 +297,9 @@ def extract_and_annotate(input_path: str, raw_out: str) -> np.ndarray:
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(raw_out, fourcc, fps, (width, height))
 
-    all_features = []
+    all_features    = []
+    finger_activity = []
+    tracker         = FingertipPressTracker()
 
     with mp_hands.Hands(
         static_image_mode        = False,
@@ -175,13 +326,28 @@ def extract_and_annotate(input_path: str, raw_out: str) -> np.ndarray:
                     CONNECTION_SPEC,
                 )
 
-                # Highlight fingertip landmarks with a filled circle
-                for tip_idx in [4, 8, 12, 16, 20]:
-                    lm = hand_lm.landmark[tip_idx]
+                # Draw landmark index number next to each point
+                for idx, lm in enumerate(hand_lm.landmark):
                     cx = int(lm.x * width)
                     cy = int(lm.y * height)
-                    cv2.circle(frame, (cx, cy), 10, (0, 255, 255), -1)
+                    cv2.putText(frame, str(idx), (cx + 6, cy - 6),
+                                cv2.FONT_HERSHEY_PLAIN, 0.8, (255, 255, 0), 1, cv2.LINE_AA)
+
+                pressing_map       = tracker.update(hand_lm)
+                pressed_this_frame = detect_pressed_fingers(hand_lm, pressing_map)
+                pressed_map        = {p["tip_idx"]: p["note"] for p in pressed_this_frame}
+
+                for tip_idx, _ in FINGER_INFO:
+                    lm  = hand_lm.landmark[tip_idx]
+                    cx  = int(lm.x * width)
+                    cy  = int(lm.y * height)
+                    pressing = tip_idx in pressed_map
+                    color    = (0, 60, 255) if pressing else (0, 255, 255)
+                    cv2.circle(frame, (cx, cy), 10, color, -1)
                     cv2.circle(frame, (cx, cy), 10, (0, 0, 0), 2)
+                    if pressing:
+                        cv2.putText(frame, pressed_map[tip_idx], (cx - 6, cy - 14),
+                                    cv2.FONT_HERSHEY_PLAIN, 0.9, (0, 60, 255), 1, cv2.LINE_AA)
 
                 # Draw a bounding box around the detected hand
                 xs = [lm.x for lm in hand_lm.landmark]
@@ -192,8 +358,11 @@ def extract_and_annotate(input_path: str, raw_out: str) -> np.ndarray:
                 y2 = min(height, int(max(ys) * height) + 15)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (200, 200, 200), 1)
 
+                finger_activity.append(pressed_this_frame)
+
             else:
                 features = [0.0] * FEATURE_SIZE
+                finger_activity.append([])
 
             all_features.append(features)
             writer.write(frame)
@@ -201,7 +370,7 @@ def extract_and_annotate(input_path: str, raw_out: str) -> np.ndarray:
     cap.release()
     writer.release()
 
-    return np.array(all_features)
+    return np.array(all_features), finger_activity
 
 
 def finalize_video(raw_path: str, final_path: str,
@@ -354,6 +523,60 @@ def ensemble_predict(all_features: np.ndarray) -> dict:
     }
 
 
+def build_analysis_summary(finger_activity: list, total_frames: int, detection_frames: int) -> dict:
+    """
+    Aggregates per-frame finger activity into a summary.
+
+    Counting rules to keep percentages ≤ 100%:
+    - note_frames[note]   = number of UNIQUE FRAMES that note was pressed
+                            (counted once per frame even if 2 fingers hit same note)
+    - finger_frames[name] = number of unique frames that finger was pressing
+    - simultaneous        = frames where 2+ different notes pressed at once
+    - All percentages use total_frames as denominator
+    """
+    note_frames   = {}   # note  → set of frame indices
+    finger_frames = {}   # fname → set of frame indices
+    simultaneous  = 0
+
+    for frame_idx, frame_presses in enumerate(finger_activity):
+        notes_this_frame = set()
+        for press in frame_presses:
+            note  = press["note"]
+            fname = press["finger"]
+            notes_this_frame.add(note)
+            note_frames.setdefault(note, set()).add(frame_idx)
+            finger_frames.setdefault(fname, set()).add(frame_idx)
+
+        if len(notes_this_frame) >= 2:
+            simultaneous += 1
+
+    detection_rate = round(detection_frames / total_frames * 100, 1) if total_frames > 0 else 0
+    base           = total_frames if total_frames > 0 else 1
+
+    notes_sorted = sorted(
+        note_frames.items(), key=lambda x: len(x[1]), reverse=True
+    )
+
+    return {
+        "total_frames":              total_frames,
+        "detection_frames":          detection_frames,
+        "detection_rate":            detection_rate,
+        "simultaneous_press_frames": simultaneous,
+        "notes_pressed": [
+            {
+                "note":  n,
+                "count": len(frames),
+                "pct":   round(len(frames) / base * 100, 1),
+            }
+            for n, frames in notes_sorted
+        ],
+        "finger_activity": {
+            f: round(len(frames) / base * 100, 1)
+            for f, frames in finger_frames.items()
+        },
+    }
+
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 
@@ -413,21 +636,26 @@ def predict():
                          f"video ini hanya memiliki {vid_frames} frame."
             }), 422
 
-        all_features = extract_and_annotate(input_path, raw_path)
+        all_features, finger_activity = extract_and_annotate(input_path, raw_path)
 
         if len(all_features) == 0:
             return jsonify({"error": "Tidak ada frame yang berhasil diekstrak dari video."}), 422
 
         # Check 4: minimal ada 1 frame dengan tangan terdeteksi
-        # Frame tanpa deteksi tangan diisi dengan vektor nol
-        hand_frames = sum(1 for f in all_features if any(v != 0.0 for v in f))
-        if hand_frames == 0:
+        detection_frames = sum(1 for f in all_features if any(v != 0.0 for v in f))
+        if detection_frames == 0:
             return jsonify({
                 "error": "Tidak ada tangan yang terdeteksi di seluruh video. "
                          "Pastikan tangan terlihat jelas dan cukup terang di kamera."
             }), 422
 
         result = ensemble_predict(all_features)
+
+        # Tambahkan penjelasan dan ringkasan analisis ke respons
+        result["explanation"] = LABEL_EXPLANATION[result["label"]]
+        result["analysis"]    = build_analysis_summary(
+            finger_activity, len(all_features), detection_frames
+        )
 
         # Output filename encodes both the original name and the predicted label
         final_name = f"{orig_stem}_{result['label']}.mp4"
