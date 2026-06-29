@@ -407,42 +407,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     margin-top: 4px;
   }
 
-  /* NOTES GRID */
-  .notes-section, .finger-section { margin-bottom: 24px; }
-  .notes-section h3, .finger-section h3 {
+  /* FINGER SECTION */
+  .finger-section { margin-bottom: 24px; }
+  .finger-section h3 {
     font-size: .78rem;
     color: #999;
     text-transform: uppercase;
     letter-spacing: .06em;
     margin-bottom: 12px;
-  }
-  .notes-grid {
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .note-card {
-    border: 1px solid #e0e0e0;
-    border-radius: 6px;
-    padding: 12px 16px;
-    text-align: center;
-    min-width: 70px;
-  }
-  .note-name {
-    font-size: 1.5rem;
-    font-weight: 700;
-    color: #1a1a1a;
-  }
-  .note-pct {
-    font-size: .85rem;
-    font-weight: 600;
-    color: #444;
-    margin-top: 2px;
-  }
-  .note-count {
-    font-size: .72rem;
-    color: #999;
-    margin-top: 2px;
   }
 
   /* ANNOTATION HINT */
@@ -597,26 +569,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
       <div class="stat-lbl">Detection Rate</div>
     </div>
     <div class="stat-box">
-      <div class="stat-val"><?= $analysis['simultaneous_press_frames'] ?></div>
-      <div class="stat-lbl">Frame 2+ Jari Sekaligus</div>
+      <div class="stat-val"><?= $analysis['press_frames'] ?></div>
+      <div class="stat-lbl">Frame Menekan Tuts</div>
     </div>
   </div>
-
-  <?php if (!empty($analysis['notes_pressed'])): ?>
-  <!-- Not yang Terdeteksi Ditekan -->
-  <div class="notes-section">
-    <h3>Not yang Terdeteksi Ditekan</h3>
-    <div class="notes-grid">
-      <?php foreach ($analysis['notes_pressed'] as $np): ?>
-      <div class="note-card">
-        <div class="note-name"><?= htmlspecialchars($np['note']) ?></div>
-        <div class="note-pct"><?= $np['pct'] ?>%</div>
-        <div class="note-count"><?= $np['count'] ?> frame</div>
-      </div>
-      <?php endforeach; ?>
-    </div>
-  </div>
-  <?php endif; ?>
 
   <?php if (!empty($analysis['finger_activity'])): ?>
   <!-- Aktivitas Per Jari -->

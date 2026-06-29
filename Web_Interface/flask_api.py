@@ -68,7 +68,6 @@ LABEL_COLOR = {
     "poor":             (60,  60,  239),
 }
 
-# Fingertip landmark indices and finger names (no fixed note — note detected from key position)
 FINGER_INFO = [
     (4,  "Ibu Jari"),
     (8,  "Telunjuk"),
@@ -77,97 +76,111 @@ FINGER_INFO = [
     (20, "Kelingking"),
 ]
 
-# White key note names cycling left-to-right on keyboard
-WHITE_NOTES = ['C', 'D', 'E', 'F', 'G', 'A', 'B']
+# PIP (proximal interphalangeal) joint for each fingertip — used for position check
+_PIP = {4: 3, 8: 6, 12: 10, 16: 14, 20: 18}
 
 
 class FingertipPressTracker:
     """
-    Detects piano key presses using per-fingertip Y-velocity RELATIVE to the wrist.
+    Detects piano key presses using two independent signals per finger:
 
-    Why velocity relative to wrist?
-      - The wrist moves with the whole hand. Subtracting wrist velocity isolates
-        only the individual finger movement, removing false positives from hand shift.
-      - When pressing: dy_finger >> dy_wrist  (finger moves down, wrist stays put)
-      - When releasing: dy_finger << dy_wrist (finger moves up)
+    1. VELOCITY signal — fingertip Y-velocity RELATIVE to the wrist.
+       Subtracting wrist drift isolates individual finger motion and prevents
+       false positives when the whole hand moves down together.
+
+    2. POSITION signal — fingertip Y is BELOW the PIP (middle knuckle) joint.
+       When pressing a piano key the fingertip drops past the knuckle level.
+       This acts as a structural gate: velocity alone (e.g. hand shake) cannot
+       trigger a press if the fingertip never actually descends below the PIP.
+
+    Both signals must agree to enter and stay in the PRESSED state. This
+    dual-gate design dramatically cuts false positives compared to velocity-only.
 
     State machine per finger:
-      IDLE      → PRESSING  : relative velocity > press_thr (moving down)
-      PRESSING  → PRESSED   : sustained downward for CONFIRM_FRAMES frames
-      PRESSING  → IDLE      : quick reversal before confirm (accidental touch)
-      PRESSED   → RELEASING : relative velocity < -release_thr (moving up)
-      RELEASING → IDLE      : velocity near zero (back at rest)
-      RELEASING → PRESSING  : pressed again before fully released
-
-    Thresholds scale with hand height (wrist → middle MCP distance) so the
-    same code works for different hand sizes and camera distances.
+      IDLE      → PRESSING  : velocity > thr  AND  tip below PIP
+      PRESSING  → PRESSED   : sustained for CONFIRM_FRAMES AND still below PIP
+      PRESSING  → IDLE      : velocity reverses AND tip no longer below PIP
+      PRESSED   → RELEASING : velocity < -thr  AND  tip no longer below PIP
+                              (held for at least HOLD_FRAMES to suppress flicker)
+      RELEASING → PRESSING  : velocity > thr  AND  tip below PIP again
+      RELEASING → IDLE      : near-zero velocity AND tip no longer below PIP
     """
-    SMOOTH         = 3    # frames to average for velocity
-    CONFIRM_FRAMES = 3    # frames of downward motion before declaring PRESSED
-
-    _MCP = {4: 2, 8: 5, 12: 9, 16: 13, 20: 17}
+    SMOOTH         = 5    # frames averaged for velocity (higher = smoother)
+    CONFIRM_FRAMES = 4    # consecutive frames required to confirm a press
+    HOLD_FRAMES    = 3    # minimum frames in PRESSED before release is checked
 
     def __init__(self):
-        self.tip_y   = {idx: deque(maxlen=10) for idx, _ in FINGER_INFO}
-        self.wrist_y = deque(maxlen=10)
+        self.tip_y   = {idx: deque(maxlen=15) for idx, _ in FINGER_INFO}
+        self.wrist_y = deque(maxlen=15)
         self.states  = {idx: 'idle' for idx, _ in FINGER_INFO}
         self.press_f = {idx: 0      for idx, _ in FINGER_INFO}
+        self.hold_f  = {idx: 0      for idx, _ in FINGER_INFO}
 
     def _velocity(self, buf) -> float:
-        """Average frame-to-frame delta over the last SMOOTH entries."""
         h = list(buf)
         if len(h) < 2:
             return 0.0
         diffs = [h[i] - h[i-1] for i in range(max(1, len(h) - self.SMOOTH), len(h))]
         return float(np.mean(diffs)) if diffs else 0.0
 
+    def _below_pip(self, tip_idx: int, hand_lm, pos_thr: float) -> bool:
+        """True when fingertip Y is meaningfully BELOW its PIP joint (pressed position)."""
+        tip_y = hand_lm.landmark[tip_idx].y
+        pip_y = hand_lm.landmark[_PIP[tip_idx]].y
+        return (tip_y - pip_y) > pos_thr   # Y increases downward in image coords
+
     def update(self, hand_lm) -> dict:
         """
-        Call once per frame with the detected hand landmarks.
-        Returns {tip_idx: bool} — True = finger is currently pressing a key.
+        Call once per frame. Returns {tip_idx: bool} — True = finger is pressing.
         """
         wrist_y = hand_lm.landmark[0].y
         self.wrist_y.append(wrist_y)
-        dw = self._velocity(self.wrist_y)           # whole-hand vertical drift
+        dw = self._velocity(self.wrist_y)
 
-        # Adaptive thresholds based on hand size
-        mid_mcp_y  = hand_lm.landmark[9].y          # middle finger MCP
-        hand_h     = abs(wrist_y - mid_mcp_y) or 0.1
-        press_thr  = hand_h * 0.04                  # 4% of hand height per frame
-        rel_thr    = press_thr * 0.50               # release threshold (smaller)
+        mid_mcp_y = hand_lm.landmark[9].y
+        hand_h    = abs(wrist_y - mid_mcp_y) or 0.1
+        press_thr = hand_h * 0.03          # velocity threshold: 3% of hand height / frame
+        rel_thr   = press_thr * 0.40       # release velocity threshold
+        pos_thr   = hand_h * 0.02          # position: tip must be > 2% hand_h below PIP
 
         result = {}
         for tip_idx, _ in FINGER_INFO:
             y = hand_lm.landmark[tip_idx].y
             self.tip_y[tip_idx].append(y)
 
-            dt     = self._velocity(self.tip_y[tip_idx])
-            dy_rel = dt - dw                        # finger velocity minus hand drift
+            dt          = self._velocity(self.tip_y[tip_idx])
+            dy_rel      = dt - dw
+            down_pos    = self._below_pip(tip_idx, hand_lm, pos_thr)
 
             state = self.states[tip_idx]
 
             if state == 'idle':
-                if dy_rel > press_thr:
+                if dy_rel > press_thr and down_pos:
                     state = 'pressing'
                     self.press_f[tip_idx] = 1
 
             elif state == 'pressing':
                 self.press_f[tip_idx] += 1
-                if self.press_f[tip_idx] >= self.CONFIRM_FRAMES:
+                if self.press_f[tip_idx] >= self.CONFIRM_FRAMES and down_pos:
                     state = 'pressed'
-                elif dy_rel < -rel_thr:             # reversed before confirm = skip
+                    self.hold_f[tip_idx] = 0
+                elif dy_rel < -rel_thr and not down_pos:
                     state = 'idle'
+                    self.press_f[tip_idx] = 0
 
             elif state == 'pressed':
-                if dy_rel < -rel_thr:
-                    state = 'releasing'
+                self.hold_f[tip_idx] += 1
+                if self.hold_f[tip_idx] >= self.HOLD_FRAMES:
+                    if dy_rel < -rel_thr and not down_pos:
+                        state = 'releasing'
 
             elif state == 'releasing':
-                if dy_rel > press_thr:              # pressed again immediately
+                if dy_rel > press_thr and down_pos:
                     state = 'pressing'
                     self.press_f[tip_idx] = 1
-                elif abs(dy_rel) < press_thr * 0.4:
+                elif not down_pos and abs(dy_rel) < press_thr * 0.5:
                     state = 'idle'
+                    self.press_f[tip_idx] = 0
 
             self.states[tip_idx] = state
             result[tip_idx] = state in ('pressing', 'pressed')
@@ -178,10 +191,10 @@ class FingertipPressTracker:
 LABEL_EXPLANATION = {
     "good":
         "Posisi dan teknik jari konsisten sepanjang video. "
-        "Transisi antar not berjalan lancar, tuts ditekan dengan tepat dan teratur.",
+        "Tuts ditekan dengan tepat, pergelangan tangan stabil, dan gerakan jari teratur.",
     "needs_improvement":
         "Terdapat beberapa ketidakkonsistenan posisi jari atau teknik menekan tuts. "
-        "Perlu latihan lebih lanjut agar transisi antar not lebih mulus.",
+        "Perlu latihan lebih lanjut agar gerakan jari lebih terkontrol dan konsisten.",
     "poor":
         "Posisi tangan dan teknik menekan tuts perlu banyak perbaikan. "
         "Banyak frame menunjukkan posisi jari yang tidak ideal atau tidak konsisten.",
@@ -252,31 +265,13 @@ def extract_frame_features(hand_landmarks):
     return features
 
 
-def note_from_x_rank(tip_idx: int, hand_lm) -> str:
-    """
-    Assign a piano note based on the fingertip's left-to-right rank
-    among all 5 fingertips. Leftmost = lowest note (C), rightmost = G.
-    """
-    sorted_tips = sorted(FINGER_INFO, key=lambda fi: hand_lm.landmark[fi[0]].x)
-    rank = next(
-        (i for i, (idx, _) in enumerate(sorted_tips) if idx == tip_idx),
-        0
-    )
-    return WHITE_NOTES[rank % len(WHITE_NOTES)]
-
-
-def detect_pressed_fingers(hand_lm, pressing_map: dict) -> list:
-    """
-    For each finger confirmed pressing by the velocity tracker,
-    assign a note based on its X-rank among all fingertips.
-    """
-    pressed = []
-    for tip_idx, fname in FINGER_INFO:
-        if not pressing_map.get(tip_idx, False):
-            continue
-        note = note_from_x_rank(tip_idx, hand_lm)
-        pressed.append({"tip_idx": tip_idx, "finger": fname, "note": note})
-    return pressed
+def detect_pressed_fingers(pressing_map: dict) -> list:
+    """Returns list of pressing fingers: [{'tip_idx': int, 'finger': str}, ...]"""
+    return [
+        {"tip_idx": tip_idx, "finger": fname}
+        for tip_idx, fname in FINGER_INFO
+        if pressing_map.get(tip_idx, False)
+    ]
 
 
 def extract_and_annotate(input_path: str, raw_out: str):
@@ -334,20 +329,22 @@ def extract_and_annotate(input_path: str, raw_out: str):
                                 cv2.FONT_HERSHEY_PLAIN, 0.8, (255, 255, 0), 1, cv2.LINE_AA)
 
                 pressing_map       = tracker.update(hand_lm)
-                pressed_this_frame = detect_pressed_fingers(hand_lm, pressing_map)
-                pressed_map        = {p["tip_idx"]: p["note"] for p in pressed_this_frame}
+                pressed_this_frame = detect_pressed_fingers(pressing_map)
+                pressing_set       = {p["tip_idx"] for p in pressed_this_frame}
 
-                for tip_idx, _ in FINGER_INFO:
+                for tip_idx, fname in FINGER_INFO:
                     lm  = hand_lm.landmark[tip_idx]
                     cx  = int(lm.x * width)
                     cy  = int(lm.y * height)
-                    pressing = tip_idx in pressed_map
+                    pressing = tip_idx in pressing_set
                     color    = (0, 60, 255) if pressing else (0, 255, 255)
                     cv2.circle(frame, (cx, cy), 10, color, -1)
                     cv2.circle(frame, (cx, cy), 10, (0, 0, 0), 2)
+                    # Show shortened finger name above tip when pressing
                     if pressing:
-                        cv2.putText(frame, pressed_map[tip_idx], (cx - 6, cy - 14),
-                                    cv2.FONT_HERSHEY_PLAIN, 0.9, (0, 60, 255), 1, cv2.LINE_AA)
+                        short = fname.split()[0]   # "Ibu Jari" → "Ibu", "Telunjuk" → "Telunjuk"
+                        cv2.putText(frame, short, (cx - 8, cy - 14),
+                                    cv2.FONT_HERSHEY_PLAIN, 0.8, (0, 60, 255), 1, cv2.LINE_AA)
 
                 # Draw a bounding box around the detected hand
                 xs = [lm.x for lm in hand_lm.landmark]
@@ -525,52 +522,28 @@ def ensemble_predict(all_features: np.ndarray) -> dict:
 
 def build_analysis_summary(finger_activity: list, total_frames: int, detection_frames: int) -> dict:
     """
-    Aggregates per-frame finger activity into a summary.
-
-    Counting rules to keep percentages ≤ 100%:
-    - note_frames[note]   = number of UNIQUE FRAMES that note was pressed
-                            (counted once per frame even if 2 fingers hit same note)
-    - finger_frames[name] = number of unique frames that finger was pressing
-    - simultaneous        = frames where 2+ different notes pressed at once
-    - All percentages use total_frames as denominator
+    Aggregates per-frame finger-press activity into a summary.
+    finger_frames[name] = set of unique frame indices where that finger was pressing.
+    Percentages use total_frames as denominator so they never exceed 100%.
     """
-    note_frames   = {}   # note  → set of frame indices
     finger_frames = {}   # fname → set of frame indices
-    simultaneous  = 0
+    press_frames  = set()
 
     for frame_idx, frame_presses in enumerate(finger_activity):
-        notes_this_frame = set()
         for press in frame_presses:
-            note  = press["note"]
             fname = press["finger"]
-            notes_this_frame.add(note)
-            note_frames.setdefault(note, set()).add(frame_idx)
             finger_frames.setdefault(fname, set()).add(frame_idx)
-
-        if len(notes_this_frame) >= 2:
-            simultaneous += 1
+            press_frames.add(frame_idx)
 
     detection_rate = round(detection_frames / total_frames * 100, 1) if total_frames > 0 else 0
     base           = total_frames if total_frames > 0 else 1
 
-    notes_sorted = sorted(
-        note_frames.items(), key=lambda x: len(x[1]), reverse=True
-    )
-
     return {
-        "total_frames":              total_frames,
-        "detection_frames":          detection_frames,
-        "detection_rate":            detection_rate,
-        "simultaneous_press_frames": simultaneous,
-        "notes_pressed": [
-            {
-                "note":  n,
-                "count": len(frames),
-                "pct":   round(len(frames) / base * 100, 1),
-            }
-            for n, frames in notes_sorted
-        ],
-        "finger_activity": {
+        "total_frames":     total_frames,
+        "detection_frames": detection_frames,
+        "detection_rate":   detection_rate,
+        "press_frames":     len(press_frames),
+        "finger_activity":  {
             f: round(len(frames) / base * 100, 1)
             for f, frames in finger_frames.items()
         },
