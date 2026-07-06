@@ -23,12 +23,12 @@ function call_flask_api(array $file): array {
     curl_close($ch);
 
     if ($err) {
-        return ['error' => 'cURL error: ' . $err . '. Pastikan Flask API sudah berjalan: python flask_api.py'];
+        return ['error' => 'cURL error: ' . $err . '. Make sure the Flask API is running: python flask_api.py'];
     }
 
     $data = json_decode($body, true);
     if ($data === null) {
-        return ['error' => 'Response tidak valid dari Flask API. HTTP ' . $code];
+        return ['error' => 'Invalid response from Flask API. HTTP ' . $code];
     }
 
     return $data;
@@ -55,14 +55,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     $maxB = MAX_FILE_MB * 1024 * 1024;
 
     if ($file['error'] !== UPLOAD_ERR_OK) {
-        $error = 'Upload gagal (kode error: ' . $file['error'] . ').';
+        $error = 'Upload failed (error code: ' . $file['error'] . ').';
     } elseif ($file['size'] > $maxB) {
-        $error = 'File terlalu besar. Maksimum ' . MAX_FILE_MB . ' MB.';
+        $error = 'File too large. Maximum ' . MAX_FILE_MB . ' MB.';
     } elseif (!in_array(
         strtolower(pathinfo($file['name'], PATHINFO_EXTENSION)),
         ['mp4', 'mov'], true
     )) {
-        $error = 'Format file tidak didukung. Gunakan MP4 atau MOV.';
+        $error = 'Unsupported file format. Please use MP4 or MOV.';
     } else {
         $data = call_flask_api($file);
 
@@ -76,7 +76,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
 }
 ?>
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -270,10 +270,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     font-size: 1.2rem;
     font-weight: 700;
     color: #1a1a1a;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
   .result-good  .badge-label { color: #2e7d32; }
   .result-needs .badge-label { color: #e65100; }
   .result-poor  .badge-label { color: #c62828; }
+
 
   .badge-meta {
     margin-top: 4px;
@@ -360,14 +364,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     top: 50%;
     transform: translateY(-50%);
     background: #1a1a1a;
-    color: #f5f5f5;
-    font-size: .78rem;
-    line-height: 1.5;
-    padding: 10px 14px;
-    border-radius: 6px;
-    width: 260px;
-    z-index: 10;
-    box-shadow: 0 4px 16px rgba(0,0,0,.2);
+    color: #f0f0f0;
+    font-size: .8rem;
+    font-weight: 400;
+    line-height: 1.6;
+    padding: 12px 15px;
+    border-radius: 8px;
+    width: 280px;
+    z-index: 100;
+    box-shadow: 0 6px 20px rgba(0,0,0,.25);
+    white-space: normal;
+    pointer-events: none;
   }
   .info-tooltip::before {
     content: '';
@@ -452,7 +459,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
 
 <header class="header">
   <h1>Piano Playing Level Classifier</h1>
-  <p>Upload video bermain piano untuk mendapatkan hasil klasifikasi tingkatan permainan.</p>
+  <p>Upload a piano playing video to get a classification of your playing level.</p>
 </header>
 
 <?php if (!$result): ?>
@@ -470,24 +477,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
 
     <div id="dropZone" class="drop-zone">
       <label for="videoInput" style="display:block;cursor:pointer;">
-        <p class="dz-label"><span>Klik untuk memilih file</span> atau seret ke sini</p>
-        <p class="dz-hint">MP4, MOV &nbsp;&mdash;&nbsp; Maks. <?= MAX_FILE_MB ?> MB</p>
+        <p class="dz-label"><span>Click to select a file</span> or drag it here</p>
+        <p class="dz-hint">MP4, MOV &nbsp;&mdash;&nbsp; Max. <?= MAX_FILE_MB ?> MB</p>
       </label>
     </div>
 
     <div class="preview-section" id="previewSection">
-      <h3>Preview Video</h3>
+      <h3>Video Preview</h3>
       <div class="preview-wrap">
         <video id="previewVideo" controls playsinline muted></video>
       </div>
-      <button type="button" class="btn btn-secondary" id="reuploadBtn">Ganti Video</button>
+      <button type="button" class="btn btn-secondary" id="reuploadBtn">Change Video</button>
     </div>
 
-    <button type="submit" class="btn btn-primary" id="submitBtn" style="display:none">Analisis Video</button>
+    <button type="submit" class="btn btn-primary" id="submitBtn" style="display:none">Analyze Video</button>
 
     <div class="loading-wrap" id="loadingWrap">
       <div class="spinner"></div>
-      <p>Memproses video, mohon tunggu...</p>
+      <p>Processing video, please wait...</p>
     </div>
   </form>
 </div>
@@ -498,7 +505,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
   $css      = label_css($result['label']);
   $probs    = $result['probabilities'];
   $n_models = $result['model_count'] ?? 5;
-  $expl     = htmlspecialchars($result['explanation'] ?? '');
+  $expl     = htmlspecialchars($result['short_explanation'] ?? '');
   $analysis = $result['analysis'] ?? [];
   $fill_map = [
     'good'             => 'fill-good',
@@ -512,14 +519,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
   ];
 ?>
 
-<!-- HASIL KLASIFIKASI -->
+<!-- CLASSIFICATION RESULT -->
 <div class="card">
-  <h2>Hasil Klasifikasi</h2>
+  <h2>Classification Result</h2>
 
   <div class="result-badge <?= $css ?>">
     <div class="badge-top-row">
       <div class="badge-label"><?= htmlspecialchars($result['display']) ?></div>
-      <div class="info-btn" tabindex="0" aria-label="Penjelasan hasil">
+      <div class="info-btn" tabindex="0" aria-label="Why this result">
         <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
           <circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/>
           <path d="M10 9v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -529,12 +536,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
       </div>
     </div>
     <div class="badge-meta">
-      Confidence: <?= $result['confidence'] ?>% &nbsp;&mdash;&nbsp; Ensemble dari <?= $n_models ?> model
+      Confidence: <?= $result['confidence'] ?>% &nbsp;&mdash;&nbsp; Ensemble of <?= $n_models ?> models
     </div>
   </div>
 
   <div class="prob-section">
-    <h3>Distribusi Probabilitas</h3>
+    <h3>Class Probability Distribution</h3>
     <div class="prob-bars">
       <?php foreach ($probs as $key => $pct): ?>
       <div class="prob-row">
@@ -550,19 +557,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
 </div>
 
 <?php if (!empty($analysis)): ?>
-<!-- PROSES DETEKSI -->
+<!-- DETECTION PROCESS -->
 <div class="card">
-  <h2>Proses Deteksi</h2>
+  <h2>Detection Process</h2>
 
-  <!-- Statistik Frame -->
+  <!-- Frame Statistics -->
   <div class="detect-stats">
     <div class="stat-box">
       <div class="stat-val"><?= $analysis['total_frames'] ?></div>
-      <div class="stat-lbl">Total Frame</div>
+      <div class="stat-lbl">Total Frames</div>
     </div>
     <div class="stat-box">
       <div class="stat-val"><?= $analysis['detection_frames'] ?></div>
-      <div class="stat-lbl">Frame Terdeteksi</div>
+      <div class="stat-lbl">Detected Frames</div>
     </div>
     <div class="stat-box">
       <div class="stat-val"><?= $analysis['detection_rate'] ?>%</div>
@@ -570,14 +577,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     </div>
     <div class="stat-box">
       <div class="stat-val"><?= $analysis['press_frames'] ?></div>
-      <div class="stat-lbl">Frame Menekan Tuts</div>
+      <div class="stat-lbl">Key Press Frames</div>
     </div>
   </div>
 
   <?php if (!empty($analysis['finger_activity'])): ?>
-  <!-- Aktivitas Per Jari -->
+  <!-- Per-Finger Activity -->
   <div class="finger-section">
-    <h3>Aktivitas Per Jari</h3>
+    <h3>Per-Finger Activity</h3>
     <div class="prob-bars">
       <?php foreach ($analysis['finger_activity'] as $finger => $pct): ?>
       <div class="prob-row">
@@ -595,24 +602,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
 <?php endif; ?>
 
 <?php if ($video_url): ?>
-<!-- VIDEO ANOTASI -->
+<!-- ANNOTATED VIDEO -->
 <div class="card">
-  <h2>Video Anotasi MediaPipe</h2>
+  <h2>MediaPipe Annotated Video</h2>
   <p class="annot-hint">
-    Landmark diberi nomor 0–20. Ujung jari (<span style="color:#c00">merah</span>) = jari sedang menekan tuts.
-    Huruf di atas ujung jari menunjukkan not yang diprediksi ditekan.
+    MediaPipe detects 21 hand landmarks (numbered 0&ndash;20) that are tracked across every frame.
+    Fingertip markers change color to indicate key-press activity:
   </p>
+  <div style="display:flex; gap:16px; flex-wrap:wrap; margin:10px 0 4px; font-size:.8rem; color:#555;">
+    <span style="display:flex; align-items:center; gap:6px;">
+      <span style="display:inline-block; width:14px; height:14px; border-radius:50%; background:#ffff00; border:1px solid #bbb; flex-shrink:0;"></span>
+      Yellow &mdash; finger is not pressing a key
+    </span>
+    <span style="display:flex; align-items:center; gap:6px;">
+      <span style="display:inline-block; width:14px; height:14px; border-radius:50%; background:#ff3c00; border:1px solid #bbb; flex-shrink:0;"></span>
+      Red &mdash; finger is actively pressing a key
+    </span>
+  </div>
   <div class="video-wrap" style="margin-top:12px">
     <video controls playsinline>
       <source src="<?= htmlspecialchars($video_url) ?>" type="video/mp4">
-      Browser Anda tidak mendukung pemutaran video.
+      Your browser does not support video playback.
     </video>
   </div>
 </div>
 <?php endif; ?>
 
 <div class="back-link">
-  <a href="index.php">Kembali &amp; analisis video lain</a>
+  <a href="index.php">Go back &amp; analyze another video</a>
 </div>
 <?php endif; ?>
 
@@ -660,11 +677,11 @@ if (fileInput) {
 
   function validateFile(file) {
     if (!ALLOWED_MIME.includes(file.type) && file.type !== '') {
-      alert('Format file tidak didukung: ' + file.type + '\nGunakan MP4, MOV.');
+      alert('Unsupported file format: ' + file.type + '\nPlease use MP4 or MOV.');
       return false;
     }
     if (file.size > <?= MAX_FILE_MB ?> * 1024 * 1024) {
-      alert('Ukuran file melebihi batas maksimum <?= MAX_FILE_MB ?> MB.');
+      alert('File size exceeds the maximum limit of <?= MAX_FILE_MB ?> MB.');
       return false;
     }
     return true;
@@ -676,7 +693,7 @@ if (fileInput) {
     else fileInput.value = '';
   });
 
-  // "Ganti Video" button resets the view back to the drop zone
+  // "Change Video" button resets the view back to the drop zone
   reuploadBtn.addEventListener('click', resetToDropZone);
 
   // Highlight the drop zone while the user is dragging a file over it
@@ -699,7 +716,7 @@ if (fileInput) {
   // Disable the button and show the spinner while the server is processing
   form.addEventListener('submit', () => {
     submitBtn.disabled    = true;
-    submitBtn.textContent = 'Memproses...';
+    submitBtn.textContent = 'Processing...';
     loading.style.display = 'flex';
   });
 }

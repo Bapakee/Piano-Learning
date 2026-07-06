@@ -69,12 +69,37 @@ LABEL_COLOR = {
 }
 
 FINGER_INFO = [
-    (4,  "Ibu Jari"),
-    (8,  "Telunjuk"),
-    (12, "Jari Tengah"),
-    (16, "Jari Manis"),
-    (20, "Kelingking"),
+    (4,  "Thumb"),
+    (8,  "Index Finger"),
+    (12, "Middle Finger"),
+    (16, "Ring Finger"),
+    (20, "Pinky"),
 ]
+
+# C major scale note mapping per hand (with thumb-crossing fingering).
+# Each finger maps to a list because thumb/index/middle cover 2 notes after the crossover.
+#
+# Right hand (ascending Do→Do):
+#   C(Do)=Thumb, D(Re)=Index, E(Mi)=Middle, F(Fa)=Thumb-cross, G(Sol)=Index, A(La)=Middle, B(Si)=Ring, C(Do)=Pinky
+# Left hand (ascending Do→Do):
+#   C(Do)=Pinky, D(Re)=Ring, E(Mi)=Middle, F(Fa)=Index, G(Sol)=Thumb, A(La)=Middle-cross, B(Si)=Index, C(Do)=Thumb
+#
+# MediaPipe reports handedness assuming a mirrored (selfie) view, so for a front-facing
+# performance recording: MediaPipe "Left" label = pianist's RIGHT hand, and vice-versa.
+FINGER_NOTE_RIGHT = {
+    4:  ["Do", "Fa"],    # Thumb  → C then crosses under to F
+    8:  ["Re", "Sol"],   # Index  → D then G
+    12: ["Mi", "La"],    # Middle → E then A
+    16: ["Si"],          # Ring   → B
+    20: ["Do"],          # Pinky  → C (upper octave)
+}
+FINGER_NOTE_LEFT = {
+    4:  ["Sol", "Do"],   # Thumb  → G then crosses over to C (upper octave)
+    8:  ["Fa", "Si"],    # Index  → F then B
+    12: ["Mi", "La"],    # Middle → E then A (after crossover)
+    16: ["Re"],          # Ring   → D
+    20: ["Do"],          # Pinky  → C (lower octave)
+}
 
 # PIP (proximal interphalangeal) joint for each fingertip — used for position check
 _PIP = {4: 3, 8: 6, 12: 10, 16: 14, 20: 18}
@@ -82,32 +107,35 @@ _PIP = {4: 3, 8: 6, 12: 10, 16: 14, 20: 18}
 
 class FingertipPressTracker:
     """
-    Detects piano key presses using two independent signals per finger:
+    Detects piano key presses using THREE signals per finger:
 
-    1. VELOCITY signal — fingertip Y-velocity RELATIVE to the wrist.
-       Subtracting wrist drift isolates individual finger motion and prevents
-       false positives when the whole hand moves down together.
+    1. VELOCITY signal — fingertip Y-velocity relative to wrist.
+       Detects the downward movement of a fast press.
 
-    2. POSITION signal — fingertip Y is BELOW the PIP (middle knuckle) joint.
-       When pressing a piano key the fingertip drops past the knuckle level.
-       This acts as a structural gate: velocity alone (e.g. hand shake) cannot
-       trigger a press if the fingertip never actually descends below the PIP.
+    2. POSITION signal — fingertip Y is below the PIP (middle knuckle).
+       Structural gate: prevents false positives from whole-hand drift.
 
-    Both signals must agree to enter and stay in the PRESSED state. This
-    dual-gate design dramatically cuts false positives compared to velocity-only.
+    3. STATIC PRESS signal — fingertip stays below PIP for N consecutive frames.
+       Catches slow/deliberate presses where velocity is too small to trigger
+       the velocity gate alone. This is the main fix for missed slow presses.
 
     State machine per finger:
-      IDLE      → PRESSING  : velocity > thr  AND  tip below PIP
+      IDLE      → PRESSING  : (velocity > thr AND tip below PIP)
+                              OR static_press (slow deliberate press)
       PRESSING  → PRESSED   : sustained for CONFIRM_FRAMES AND still below PIP
       PRESSING  → IDLE      : velocity reverses AND tip no longer below PIP
-      PRESSED   → RELEASING : velocity < -thr  AND  tip no longer below PIP
+      PRESSED   → RELEASING : velocity < -thr AND tip no longer below PIP
                               (held for at least HOLD_FRAMES to suppress flicker)
-      RELEASING → PRESSING  : velocity > thr  AND  tip below PIP again
-      RELEASING → IDLE      : near-zero velocity AND tip no longer below PIP
+      RELEASING → PRESSING  : velocity > thr AND tip below PIP again
+      RELEASING → IDLE      : tip no longer below PIP AND near-zero velocity
     """
-    SMOOTH         = 5    # frames averaged for velocity (higher = smoother)
-    CONFIRM_FRAMES = 4    # consecutive frames required to confirm a press
-    HOLD_FRAMES    = 3    # minimum frames in PRESSED before release is checked
+    SMOOTH         = 3    # shorter window = more responsive to fast presses
+    CONFIRM_FRAMES = 3    # confirm press 1 frame faster than before
+    HOLD_FRAMES    = 4    # hold state longer to suppress flicker on release
+    STATIC_FRAMES  = 6    # frames tip must stay below PIP to auto-confirm slow press
+
+    # MCP (knuckle) landmarks — additional reference for press depth
+    _MCP = {4: 2, 8: 5, 12: 9, 16: 13, 20: 17}
 
     def __init__(self):
         self.tip_y   = {idx: deque(maxlen=15) for idx, _ in FINGER_INFO}
@@ -115,6 +143,7 @@ class FingertipPressTracker:
         self.states  = {idx: 'idle' for idx, _ in FINGER_INFO}
         self.press_f = {idx: 0      for idx, _ in FINGER_INFO}
         self.hold_f  = {idx: 0      for idx, _ in FINGER_INFO}
+        self.below_f = {idx: 0      for idx, _ in FINGER_INFO}  # consecutive frames below PIP
 
     def _velocity(self, buf) -> float:
         h = list(buf)
@@ -124,63 +153,96 @@ class FingertipPressTracker:
         return float(np.mean(diffs)) if diffs else 0.0
 
     def _below_pip(self, tip_idx: int, hand_lm, pos_thr: float) -> bool:
-        """True when fingertip Y is meaningfully BELOW its PIP joint (pressed position)."""
+        """True when fingertip Y is below its PIP joint by at least pos_thr."""
         tip_y = hand_lm.landmark[tip_idx].y
         pip_y = hand_lm.landmark[_PIP[tip_idx]].y
-        return (tip_y - pip_y) > pos_thr   # Y increases downward in image coords
+        return (tip_y - pip_y) > pos_thr
 
     def update(self, hand_lm) -> dict:
         """
         Call once per frame. Returns {tip_idx: bool} — True = finger is pressing.
+
+        Dataset analysis findings that shaped these thresholds:
+        - hand_h ranges 0.002–0.155 across videos (close-up vs landscape).
+          Using hand_h * factor alone makes press_thr ~0.0003 for close-up videos
+          (velocity gate dies). A minimum floor of 0.004 fixes this.
+        - Poor-technique players have flat fingers: tip_y - pip_y averages -0.014
+          (tip ABOVE PIP). Strict pos_thr blocks all their presses.
+          Two separate thresholds: permissive for velocity trigger, strict for static.
+        - Resting velocity ~0.003, press velocity ~0.008+. press_thr=0.004 floor
+          sits cleanly between noise floor and genuine press signal.
         """
         wrist_y = hand_lm.landmark[0].y
         self.wrist_y.append(wrist_y)
         dw = self._velocity(self.wrist_y)
 
         mid_mcp_y = hand_lm.landmark[9].y
-        hand_h    = abs(wrist_y - mid_mcp_y) or 0.1
-        press_thr = hand_h * 0.03          # velocity threshold: 3% of hand height / frame
-        rel_thr   = press_thr * 0.40       # release velocity threshold
-        pos_thr   = hand_h * 0.02          # position: tip must be > 2% hand_h below PIP
+        hand_h    = abs(wrist_y - mid_mcp_y) or 0.01
+
+        # Velocity threshold: floor of 0.004 prevents near-zero threshold on close-up videos.
+        # Scales up for larger hand_h (landscape / farther-away camera) so fast presses
+        # in those videos still require proportionally more movement to trigger.
+        press_thr = max(0.004, hand_h * 0.30)
+        rel_thr   = press_thr * 0.40
+
+        # Permissive position gate for velocity-triggered presses:
+        # allows tip up to 0.5 * hand_h ABOVE PIP — catches flat-finger (poor) technique.
+        pos_thr_vel = -hand_h * 0.5
+
+        # Strict position gate for static (slow) presses:
+        # requires tip to be genuinely below PIP to avoid always-on false positives.
+        pos_thr_static = hand_h * 0.01
 
         result = {}
         for tip_idx, _ in FINGER_INFO:
             y = hand_lm.landmark[tip_idx].y
             self.tip_y[tip_idx].append(y)
 
-            dt          = self._velocity(self.tip_y[tip_idx])
-            dy_rel      = dt - dw
-            down_pos    = self._below_pip(tip_idx, hand_lm, pos_thr)
+            dt         = self._velocity(self.tip_y[tip_idx])
+            dy_rel     = dt - dw
+            down_vel   = self._below_pip(tip_idx, hand_lm, pos_thr_vel)    # permissive
+            down_static= self._below_pip(tip_idx, hand_lm, pos_thr_static) # strict
+
+            # Static counter uses the strict threshold to prevent always-on triggers
+            if down_static:
+                self.below_f[tip_idx] += 1
+            else:
+                self.below_f[tip_idx] = 0
+
+            static_press = self.below_f[tip_idx] >= self.STATIC_FRAMES
 
             state = self.states[tip_idx]
 
             if state == 'idle':
-                if dy_rel > press_thr and down_pos:
+                # Velocity trigger: uses permissive position gate (catches flat fingers)
+                # Static trigger: uses strict position gate (tip must be below PIP)
+                if (dy_rel > press_thr and down_vel) or static_press:
                     state = 'pressing'
                     self.press_f[tip_idx] = 1
 
             elif state == 'pressing':
                 self.press_f[tip_idx] += 1
-                if self.press_f[tip_idx] >= self.CONFIRM_FRAMES and down_pos:
+                if self.press_f[tip_idx] >= self.CONFIRM_FRAMES and down_vel:
                     state = 'pressed'
                     self.hold_f[tip_idx] = 0
-                elif dy_rel < -rel_thr and not down_pos:
+                elif dy_rel < -rel_thr and not down_vel:
                     state = 'idle'
                     self.press_f[tip_idx] = 0
 
             elif state == 'pressed':
                 self.hold_f[tip_idx] += 1
-                if self.hold_f[tip_idx] >= self.HOLD_FRAMES:
-                    if dy_rel < -rel_thr and not down_pos:
+                if self.hold_f[tip_idx] >= self.HOLD_FRAMES and not static_press:
+                    if dy_rel < -rel_thr and not down_vel:
                         state = 'releasing'
 
             elif state == 'releasing':
-                if dy_rel > press_thr and down_pos:
+                if (dy_rel > press_thr and down_vel) or static_press:
                     state = 'pressing'
                     self.press_f[tip_idx] = 1
-                elif not down_pos and abs(dy_rel) < press_thr * 0.5:
+                elif not down_vel and abs(dy_rel) < press_thr * 0.5:
                     state = 'idle'
                     self.press_f[tip_idx] = 0
+                    self.below_f[tip_idx] = 0
 
             self.states[tip_idx] = state
             result[tip_idx] = state in ('pressing', 'pressed')
@@ -190,14 +252,15 @@ class FingertipPressTracker:
 # Short explanation shown in the UI info tooltip for each classification label
 LABEL_EXPLANATION = {
     "good":
-        "Posisi dan teknik jari konsisten sepanjang video. "
-        "Tuts ditekan dengan tepat, pergelangan tangan stabil, dan gerakan jari teratur.",
+        "Your fingers are curling properly, pressing the keys with the fingertip, "
+        "and your hand stays stable throughout — all signs of good technique.",
     "needs_improvement":
-        "Terdapat beberapa ketidakkonsistenan posisi jari atau teknik menekan tuts. "
-        "Perlu latihan lebih lanjut agar gerakan jari lebih terkontrol dan konsisten.",
+        "Your technique is on the right track, but the AI detected some inconsistencies "
+        "— such as uneven finger pressure or slight wrist instability. More focused practice will fix this.",
     "poor":
-        "Posisi tangan dan teknik menekan tuts perlu banyak perbaikan. "
-        "Banyak frame menunjukkan posisi jari yang tidak ideal atau tidak konsisten.",
+        "The AI detected that your fingers are often flat (not curved) when pressing the keys. "
+        "Try to keep your fingers slightly curved, like you are gently holding a ball, "
+        "and press each key with the very tip of your finger.",
 }
 
 
@@ -265,10 +328,19 @@ def extract_frame_features(hand_landmarks):
     return features
 
 
-def detect_pressed_fingers(pressing_map: dict) -> list:
-    """Returns list of pressing fingers: [{'tip_idx': int, 'finger': str}, ...]"""
+def detect_pressed_fingers(pressing_map: dict, finger_note_map: dict) -> list:
+    """
+    Returns list of pressing fingers with their note(s).
+    finger_note_map: FINGER_NOTE_RIGHT or FINGER_NOTE_LEFT based on detected handedness.
+    note_label: joined string, e.g. 'Do/Fa' for fingers that cover 2 notes.
+    """
     return [
-        {"tip_idx": tip_idx, "finger": fname}
+        {
+            "tip_idx":    tip_idx,
+            "finger":     fname,
+            "notes":      finger_note_map[tip_idx],
+            "note_label": "/".join(finger_note_map[tip_idx]),
+        }
         for tip_idx, fname in FINGER_INFO
         if pressing_map.get(tip_idx, False)
     ]
@@ -314,6 +386,15 @@ def extract_and_annotate(input_path: str, raw_out: str):
                 hand_lm  = results.multi_hand_landmarks[0]
                 features = extract_frame_features(hand_lm)
 
+                # Determine handedness: MediaPipe assumes a mirrored view, so for a
+                # standard front-facing recording "Left" label = pianist's right hand.
+                mp_label = (
+                    results.multi_handedness[0].classification[0].label
+                    if results.multi_handedness else "Left"
+                )
+                finger_note_map = FINGER_NOTE_RIGHT if mp_label == "Left" else FINGER_NOTE_LEFT
+                hand_label_text = "R" if mp_label == "Left" else "L"
+
                 mp_drawing.draw_landmarks(
                     frame, hand_lm,
                     mp_hands.HAND_CONNECTIONS,
@@ -329,7 +410,7 @@ def extract_and_annotate(input_path: str, raw_out: str):
                                 cv2.FONT_HERSHEY_PLAIN, 0.8, (255, 255, 0), 1, cv2.LINE_AA)
 
                 pressing_map       = tracker.update(hand_lm)
-                pressed_this_frame = detect_pressed_fingers(pressing_map)
+                pressed_this_frame = detect_pressed_fingers(pressing_map, finger_note_map)
                 pressing_set       = {p["tip_idx"] for p in pressed_this_frame}
 
                 for tip_idx, fname in FINGER_INFO:
@@ -340,11 +421,17 @@ def extract_and_annotate(input_path: str, raw_out: str):
                     color    = (0, 60, 255) if pressing else (0, 255, 255)
                     cv2.circle(frame, (cx, cy), 10, color, -1)
                     cv2.circle(frame, (cx, cy), 10, (0, 0, 0), 2)
-                    # Show shortened finger name above tip when pressing
+                    # Show note name(s) above fingertip when pressing
                     if pressing:
-                        short = fname.split()[0]   # "Ibu Jari" → "Ibu", "Telunjuk" → "Telunjuk"
-                        cv2.putText(frame, short, (cx - 8, cy - 14),
-                                    cv2.FONT_HERSHEY_PLAIN, 0.8, (0, 60, 255), 1, cv2.LINE_AA)
+                        note_label = "/".join(finger_note_map[tip_idx])
+                        cv2.putText(frame, note_label, (cx - 12, cy - 14),
+                                    cv2.FONT_HERSHEY_PLAIN, 0.85, (0, 60, 255), 1, cv2.LINE_AA)
+
+                # Draw hand label (R / L) near the wrist
+                wrist = hand_lm.landmark[0]
+                wx, wy = int(wrist.x * width), int(wrist.y * height)
+                cv2.putText(frame, hand_label_text, (wx - 18, wy + 20),
+                            cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 255, 0), 1, cv2.LINE_AA)
 
                 # Draw a bounding box around the detected hand
                 xs = [lm.x for lm in hand_lm.landmark]
@@ -531,8 +618,8 @@ def build_analysis_summary(finger_activity: list, total_frames: int, detection_f
 
     for frame_idx, frame_presses in enumerate(finger_activity):
         for press in frame_presses:
-            fname = press["finger"]
-            finger_frames.setdefault(fname, set()).add(frame_idx)
+            key = f'{press["note_label"]} ({press["finger"]})'
+            finger_frames.setdefault(key, set()).add(frame_idx)
             press_frames.add(frame_idx)
 
     detection_rate = round(detection_frames / total_frames * 100, 1) if total_frames > 0 else 0
@@ -548,6 +635,92 @@ def build_analysis_summary(finger_activity: list, total_frames: int, detection_f
             for f, frames in finger_frames.items()
         },
     }
+
+
+def build_explanation(label: str, confidence: float, per_model: list, analysis: dict) -> str:
+    """
+    Short, human-friendly explanation of why the video got its result.
+    Max 4 sentences — one per topic: why, reliability, video quality, finger activity.
+    """
+    total      = analysis.get("total_frames", 0)
+    detected   = analysis.get("detection_frames", 0)
+    rate       = analysis.get("detection_rate", 0)
+    press      = analysis.get("press_frames", 0)
+    finger_act = analysis.get("finger_activity", {})
+    n_models   = len(per_model)
+    n_agree    = sum(1 for m in per_model if m["label"] == label)
+    press_pct  = round(press / total * 100, 1) if total > 0 else 0
+
+    sorted_fingers = sorted(finger_act.items(), key=lambda x: x[1], reverse=True)
+    most_active    = sorted_fingers[0] if sorted_fingers else None
+
+    sentences = []
+
+    # 1 — Why this label (the core human reason)
+    if label == "good":
+        sentences.append(
+            "The AI detected that your fingers were <strong>curled and pressing the keys "
+            "with the fingertip</strong> in a consistent way throughout the video, "
+            "and your wrist stayed relatively stable — which are the main indicators of good technique."
+        )
+    elif label == "needs_improvement":
+        sentences.append(
+            "The AI noticed <strong>some inconsistencies</strong> in your finger movement — "
+            "for example, a finger occasionally pressing at an angle or the wrist shifting "
+            "slightly more than expected. Your technique is on the right track; "
+            "focused practice on consistency will move you to the next level."
+        )
+    else:
+        sentences.append(
+            "The AI frequently detected <strong>flat fingers</strong> — meaning your fingers "
+            "were not curled enough when pressing the keys. "
+            "Try to keep your fingers slightly curved (like gently holding a ball) "
+            "and press each key with the very tip of your finger."
+        )
+
+    # 2 — How reliable is this result
+    if n_agree == n_models:
+        sentences.append(
+            f"All <strong>{n_models} AI models</strong> agreed on this result "
+            f"(confidence <strong>{confidence:.1f}%</strong>), so this prediction is very consistent."
+        )
+    elif n_agree >= n_models // 2 + 1:
+        sentences.append(
+            f"<strong>{n_agree} of {n_models} AI models</strong> agreed "
+            f"(confidence <strong>{confidence:.1f}%</strong>)."
+        )
+    else:
+        sentences.append(
+            f"Only <strong>{n_agree} of {n_models} AI models</strong> agreed "
+            f"(confidence <strong>{confidence:.1f}%</strong>) — treat this as an estimate."
+        )
+
+    # 3 — Video quality (only if not great)
+    if rate < 90:
+        if rate >= 60:
+            sentences.append(
+                f"The hand was visible in <strong>{rate}% of frames</strong> — "
+                f"recording with better lighting may improve accuracy."
+            )
+        else:
+            sentences.append(
+                f"The hand was only visible in <strong>{rate}% of frames</strong>, "
+                f"which is low. Try recording again with the hand clearly in frame and better lighting."
+            )
+
+    # 4 — Key press activity
+    if most_active and press > 0:
+        sentences.append(
+            f"Key presses were detected in <strong>{press_pct}% of the video</strong>, "
+            f"with <strong>{most_active[0]}</strong> being the most active finger "
+            f"({most_active[1]}% of the video)."
+        )
+    elif press == 0:
+        sentences.append(
+            "No key presses were detected — make sure the hand is close enough to the camera."
+        )
+
+    return " ".join(sentences)
 
 
 app = Flask(__name__)
@@ -566,15 +739,15 @@ def predict():
     and returns a JSON object with the classification result and annotated video filename.
     """
     if "video" not in request.files:
-        return jsonify({"error": "Field 'video' tidak ditemukan dalam request."}), 400
+        return jsonify({"error": "Field 'video' not found in request."}), 400
 
     file = request.files["video"]
 
     if not file.filename:
-        return jsonify({"error": "Tidak ada file yang dipilih."}), 400
+        return jsonify({"error": "No file selected."}), 400
 
     if not allowed_file(file.filename):
-        return jsonify({"error": f"Format tidak didukung. Gunakan: {', '.join(ALLOWED_EXT).upper()}"}), 400
+        return jsonify({"error": f"Unsupported format. Use: {', '.join(ALLOWED_EXT).upper()}"}), 400
 
     uid       = uuid.uuid4().hex
     orig_stem = os.path.splitext(secure_filename(file.filename))[0]
@@ -586,11 +759,11 @@ def predict():
     file.save(input_path)
 
     try:
-        # Check 1: pastikan OpenCV bisa membuka file (file tidak rusak)
+        # Check 1: ensure OpenCV can open the file (not corrupt)
         cap_check = cv2.VideoCapture(input_path)
         if not cap_check.isOpened():
             cap_check.release()
-            return jsonify({"error": "File video tidak dapat dibaca. Pastikan file tidak rusak dan formatnya didukung."}), 422
+            return jsonify({"error": "Video file could not be read. Make sure the file is not corrupted and the format is supported."}), 422
 
         vid_w      = int(cap_check.get(cv2.CAP_PROP_FRAME_WIDTH))
         vid_h      = int(cap_check.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -598,36 +771,43 @@ def predict():
         vid_frames = int(cap_check.get(cv2.CAP_PROP_FRAME_COUNT))
         cap_check.release()
 
-        # Check 2: dimensi video harus valid
+        # Check 2: video must have valid dimensions
         if vid_w == 0 or vid_h == 0:
-            return jsonify({"error": "Video memiliki dimensi tidak valid (lebar atau tinggi bernilai 0)."}), 422
+            return jsonify({"error": "Video has invalid dimensions (width or height is 0)."}), 422
 
-        # Check 3: video harus cukup panjang untuk membentuk minimal 1 sequence
+        # Check 3: video must be long enough to form at least one sequence
         if 0 < vid_frames < SEQUENCE_LENGTH:
             return jsonify({
-                "error": f"Video terlalu pendek. Dibutuhkan minimal {SEQUENCE_LENGTH} frame, "
-                         f"video ini hanya memiliki {vid_frames} frame."
+                "error": f"Video is too short. At least {SEQUENCE_LENGTH} frames are required; "
+                         f"this video only has {vid_frames} frames."
             }), 422
 
         all_features, finger_activity = extract_and_annotate(input_path, raw_path)
 
         if len(all_features) == 0:
-            return jsonify({"error": "Tidak ada frame yang berhasil diekstrak dari video."}), 422
+            return jsonify({"error": "No frames could be extracted from the video."}), 422
 
-        # Check 4: minimal ada 1 frame dengan tangan terdeteksi
+        # Check 4: at least 1 frame must have a hand detected
         detection_frames = sum(1 for f in all_features if any(v != 0.0 for v in f))
         if detection_frames == 0:
             return jsonify({
-                "error": "Tidak ada tangan yang terdeteksi di seluruh video. "
-                         "Pastikan tangan terlihat jelas dan cukup terang di kamera."
+                "error": "No hand was detected in the video. "
+                         "Make sure the hand is clearly visible and well-lit."
             }), 422
 
         result = ensemble_predict(all_features)
 
-        # Tambahkan penjelasan dan ringkasan analisis ke respons
-        result["explanation"] = LABEL_EXPLANATION[result["label"]]
-        result["analysis"]    = build_analysis_summary(
+        result["analysis"] = build_analysis_summary(
             finger_activity, len(all_features), detection_frames
+        )
+
+        # Short one-liner shown in the badge hover tooltip
+        result["short_explanation"] = LABEL_EXPLANATION[result["label"]]
+
+        # Dynamic plain-language explanation built from actual video data
+        result["explanation"] = build_explanation(
+            result["label"], result["confidence"],
+            result["per_model"], result["analysis"]
         )
 
         # Output filename encodes both the original name and the predicted label
