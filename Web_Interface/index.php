@@ -424,6 +424,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
     margin-bottom: 12px;
   }
 
+  /* WHY-BOX — full explanation panel */
+  .why-box {
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 14px 16px;
+    margin-bottom: 20px;
+    background: #fafafa;
+    font-size: .82rem;
+    color: #333;
+    line-height: 1.65;
+  }
+  .why-box-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: .72rem;
+    font-weight: 700;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    margin-bottom: 8px;
+  }
+  .why-box-title svg { flex-shrink: 0; color: #aaa; }
+  .why-box p { margin: 0; }
+
   /* ANNOTATION HINT */
   .annot-hint {
     font-size: .8rem;
@@ -505,8 +530,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
   $css      = label_css($result['label']);
   $probs    = $result['probabilities'];
   $n_models = $result['model_count'] ?? 5;
-  $expl     = htmlspecialchars($result['short_explanation'] ?? '');
-  $analysis = $result['analysis'] ?? [];
+  $expl      = htmlspecialchars($result['short_explanation'] ?? '');
+  $full_expl = $result['explanation'] ?? '';
+  $analysis  = $result['analysis'] ?? [];
   $fill_map = [
     'good'             => 'fill-good',
     'needs_improvement'=> 'fill-needs',
@@ -539,6 +565,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
       Confidence: <?= $result['confidence'] ?>% &nbsp;&mdash;&nbsp; Ensemble of <?= $n_models ?> models
     </div>
   </div>
+
+  <?php if ($full_expl): ?>
+  <div class="why-box">
+    <div class="why-box-title">
+      <svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M10 9v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <circle cx="10" cy="6.5" r="0.75" fill="currentColor"/>
+      </svg>
+      Why is the result <em><?= htmlspecialchars($name_map[$result['label']] ?? $result['label']) ?></em>?
+    </div>
+    <p><?= $full_expl ?></p>
+  </div>
+  <?php endif; ?>
 
   <div class="prob-section">
     <h3>Class Probability Distribution</h3>
