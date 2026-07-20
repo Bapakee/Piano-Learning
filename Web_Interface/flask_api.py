@@ -90,10 +90,11 @@ STRIDE          = 5
 FEATURE_SIZE    = 83
 
 # ── Which three landmark points to use for each finger bend angle ──
-# Each row has three landmark numbers: [above_joint, the_joint, below_joint].
-# The angle is measured at the middle number (the actual joint).
-# Example: [2, 1, 3] measures how bent landmark 1 is,
-# using landmark 2 (above) and landmark 3 (below) as the two sides.
+# Each row has three landmark numbers: [vertex_joint, side_a, side_b].
+# The angle is measured at the FIRST number (the vertex / actual joint),
+# using the other two landmarks as the two sides of the angle.
+# Example: [2, 1, 3] measures the angle at landmark 2,
+# using landmark 1 and landmark 3 as the two sides.
 JOINTS = [
     [2,  1,  3], [3,  2,  4],     # thumb
     [6,  5,  7], [7,  6,  8],     # index finger
@@ -182,38 +183,41 @@ class FingertipPressTracker:
     Watches the hand in each video frame and decides whether
     each finger is pressing a piano key.
 
-    It uses three different checks together because no single
-    check works perfectly for all playing styles:
+    A key press is detected from the fingertip's DOWNWARD MOTION,
+    not from its static position. This matters because players with
+    good (curled) technique keep their fingertips permanently below
+    the middle knuckle, so a position-only check would wrongly mark
+    every finger as "pressing" all the time.
 
-    1. SPEED CHECK — Is the fingertip moving downward quickly?
-       A sudden fast downward movement usually means a key press.
+    Two checks are combined:
 
-    2. POSITION CHECK — Is the fingertip lower than the middle
-       knuckle of that finger? This is a loose check so that
-       players with flat fingers (Poor technique) are still detected.
+    1. SPEED CHECK — Is the fingertip actively moving downward fast
+       enough (relative to the wrist)? A sudden downward movement is
+       what actually signals a key press.
 
-    3. HELD-DOWN CHECK — Has the fingertip stayed low for several
-       frames in a row? This catches slow, gentle presses that
-       are not fast enough to trigger the speed check.
+    2. POSITION CHECK — Is the fingertip roughly at or below the
+       middle knuckle? A loose gate so flat-finger players still count.
 
-    Each finger goes through four stages:
-      IDLE → PRESSING → PRESSED → RELEASING → IDLE
-    This prevents a single shaky frame from being counted as a press.
+    Each finger goes through three stages:
+      IDLE → PRESSING → PRESSED → (finger lifts up) → IDLE
+    A press starts on a downward motion, is held (latched) through the
+    whole keystroke, and is released only when the finger clearly moves
+    back up. This prevents a single shaky frame from being counted.
     """
 
     # How many recent frames to use when calculating finger speed
     SMOOTH         = 3
 
     # How many frames of downward movement before confirming a press
-    CONFIRM_FRAMES = 3
+    CONFIRM_FRAMES = 2
 
-    # Minimum frames a finger must stay pressed before it can be released
-    # (prevents flickering between pressed and not-pressed)
-    HOLD_FRAMES    = 4
-
-    # How many frames the fingertip must stay below the middle knuckle
-    # for the held-down check to trigger
-    STATIC_FRAMES  = 6
+    # Minimum DOWNWARD speed (normalised units) to START a press, and minimum
+    # UPWARD speed to RELEASE it. These correspond to the descending velocity of
+    # a key depression and the ascending velocity of a key release described for
+    # a keystroke cycle in Oku & Furuya (2022), Sensors 22(13):4891.
+    # Lower = more sensitive; higher = stricter.
+    PRESS_VEL      = 0.0015
+    RELEASE_VEL    = 0.0015
 
     # The large knuckle at the base of each finger (kept for possible future use)
     _MCP = {4: 2, 8: 5, 12: 9, 16: 13, 20: 17}
@@ -226,10 +230,8 @@ class FingertipPressTracker:
         # The current stage of each finger (idle / pressing / pressed / releasing)
         self.states  = {idx: 'idle' for idx, _ in FINGER_INFO}
 
-        # Counters that track how long each finger has been in each stage
-        self.press_f = {idx: 0 for idx, _ in FINGER_INFO}   # frames in "pressing" stage
-        self.hold_f  = {idx: 0 for idx, _ in FINGER_INFO}   # frames in "pressed" stage
-        self.below_f = {idx: 0 for idx, _ in FINGER_INFO}   # consecutive frames fingertip is low
+        # Counter tracking how long each finger has been in the "pressing" stage
+        self.press_f = {idx: 0 for idx, _ in FINGER_INFO}
 
     def _velocity(self, buf) -> float:
         """
@@ -269,21 +271,21 @@ class FingertipPressTracker:
           True  = this finger is pressing a key right now.
           False = this finger is not pressing.
 
-        Why the thresholds are set the way they are:
+        How the keystroke is modelled (Oku & Furuya, 2022):
         ─────────────────────────────────────────────
-        • The distance between the wrist and knuckles varies a lot
-          depending on how close the camera is to the hand.
-          A minimum floor (0.004) prevents the threshold from becoming
-          so small that random noise triggers a false press.
+        • A press STARTS on a downward (descending) motion of the fingertip,
+          not on a static low position — curled, good-technique fingertips sit
+          permanently below the knuckle and would otherwise always look pressed.
 
-        • Players with Poor technique press with flat fingers —
-          the fingertip may not go below the middle knuckle at all.
-          The loose position check (pos_thr_vel, which is negative)
-          makes sure these players are still detected.
+        • Once pressed, the finger is LATCHED (kept red) through the hold phase,
+          where the fingertip is down but barely moving (velocity ≈ 0).
 
-        • The strict position check (pos_thr_static) is only used
-          for the held-down check, so random wobble does not cause
-          a finger to always appear "pressed".
+        • The press is RELEASED only on an upward (ascending) motion — the moment
+          the finger lifts off the key.
+
+        • A loose position gate (pos_thr_vel, negative) still requires the
+          fingertip to be roughly at/below the knuckle, so flat-finger (Poor)
+          players are covered while an obviously-raised finger is not.
         """
         # Save the wrist's vertical position for this frame
         wrist_y = hand_lm.landmark[0].y
@@ -294,21 +296,9 @@ class FingertipPressTracker:
         mid_mcp_y = hand_lm.landmark[9].y
         hand_h    = abs(wrist_y - mid_mcp_y) or 0.01   # never let this be zero
 
-        # How fast the fingertip must move downward to count as a press
-        # (scales with hand size, but never too small for close-up cameras)
-        press_thr = max(0.004, hand_h * 0.30)
-
-        # How slow the fingertip must be moving to count as released
-        # (easier to release than to press)
-        rel_thr   = press_thr * 0.40
-
         # Loose position check: the fingertip just needs to be near the knuckle level
         # (allows detection of flat-finger players)
         pos_thr_vel = -hand_h * 0.5
-
-        # Strict position check: the fingertip must be clearly below the knuckle
-        # (used only for the slow-press / held-down check)
-        pos_thr_static = hand_h * 0.01
 
         result = {}
         for tip_idx, _ in FINGER_INFO:
@@ -316,64 +306,42 @@ class FingertipPressTracker:
             y = hand_lm.landmark[tip_idx].y
             self.tip_y[tip_idx].append(y)
 
-            # dy_rel = fingertip speed minus wrist speed
-            # This removes any up-and-down movement of the whole hand,
-            # so only the finger's own movement is counted.
+            # dy_rel = fingertip speed minus wrist speed. This removes any
+            # up-and-down movement of the whole hand, so only the finger's own
+            # motion is counted.
+            #   dy_rel > 0  → descending (pressing down)
+            #   dy_rel < 0  → ascending (lifting up)
             dt      = self._velocity(self.tip_y[tip_idx])
             dy_rel  = dt - dw
 
-            # Two versions of "is the fingertip low enough?"
-            down_vel    = self._below_pip(tip_idx, hand_lm, pos_thr_vel)     # loose check
-            down_static = self._below_pip(tip_idx, hand_lm, pos_thr_static)  # strict check
-
-            # Count how many frames in a row the fingertip has been below the knuckle
-            if down_static:
-                self.below_f[tip_idx] += 1
-            else:
-                self.below_f[tip_idx] = 0
-
-            # If the fingertip has been low for many frames → treat it as a slow press
-            static_press = self.below_f[tip_idx] >= self.STATIC_FRAMES
+            # Loose gate: is the fingertip roughly at or below the knuckle level?
+            down_vel = self._below_pip(tip_idx, hand_lm, pos_thr_vel)
 
             state = self.states[tip_idx]
 
             if state == 'idle':
-                # Start a press if the fingertip moves down fast enough,
-                # OR if it has been sitting low for enough frames (slow press)
-                if (dy_rel > press_thr and down_vel) or static_press:
+                # Start a press on a clear downward (descending) motion.
+                # No static "held-down" trigger → a curled, still finger stays yellow.
+                if dy_rel > self.PRESS_VEL and down_vel:
                     state = 'pressing'
                     self.press_f[tip_idx] = 1
 
             elif state == 'pressing':
                 self.press_f[tip_idx] += 1
-                if self.press_f[tip_idx] >= self.CONFIRM_FRAMES and down_vel:
-                    # The finger has been moving down for long enough — confirm it as pressed
+                if self.press_f[tip_idx] >= self.CONFIRM_FRAMES:
+                    # Downward motion held for enough frames — confirm as pressed
                     state = 'pressed'
-                    self.hold_f[tip_idx] = 0
-                elif dy_rel < -rel_thr and not down_vel:
-                    # The finger started moving back up before the press was confirmed
-                    # → it was just a wobble, not a real press
+                elif dy_rel < -self.RELEASE_VEL:
+                    # Moved back up before confirmation → just a wobble, not a press
                     state = 'idle'
                     self.press_f[tip_idx] = 0
 
             elif state == 'pressed':
-                self.hold_f[tip_idx] += 1
-                # Only check for release after the finger has been held down long enough
-                # (prevents rapid on/off flickering)
-                if self.hold_f[tip_idx] >= self.HOLD_FRAMES and not static_press:
-                    if dy_rel < -rel_thr and not down_vel:
-                        state = 'releasing'
-
-            elif state == 'releasing':
-                if (dy_rel > press_thr and down_vel) or static_press:
-                    # The finger pressed down again before fully lifting off
-                    state = 'pressing'
-                    self.press_f[tip_idx] = 1
-                elif not down_vel and abs(dy_rel) < press_thr * 0.5:
-                    # The finger is back at rest — fully idle again
+                # LATCH: stay pressed through the hold phase (velocity ≈ 0);
+                # release only on a clear upward (ascending) motion — the key lift.
+                if dy_rel < -self.RELEASE_VEL:
                     state = 'idle'
                     self.press_f[tip_idx] = 0
-                    self.below_f[tip_idx] = 0
 
             self.states[tip_idx] = state
             # A finger is counted as "pressing" when it is in the pressing or pressed stage
@@ -445,31 +413,30 @@ print(f"\nEnsemble ready: {len(models)} models loaded.\n")
 # HAND SHAPE MEASUREMENT HELPERS
 # ============================================================
 
-def calculate_angle(landmark_above, joint_to_measure, landmark_below):
+def calculate_angle(vertex, point_a, point_b):
     """
-    Measures how bent a finger joint is, in degrees.
+    Measures a finger-joint angle, in degrees.
 
-    Imagine three dots on a finger:
-      • landmark_above   — the dot closer to the fingertip
-      • joint_to_measure — the actual joint (knuckle) being measured
-      • landmark_below   — the dot closer to the wrist
+    The angle is measured AT `vertex` (the first landmark of the triplet),
+    between the two rays vertex→point_a and vertex→point_b.
+    This follows the supervisor's convention where the vertex is the
+    FIRST landmark in each JOINTS row.
 
-    The angle is measured at joint_to_measure using the other two dots
-    as the two sides of the angle.
+      0°  = the two sides point in the same direction
+      90° = the two sides are at a right angle
 
-      0°  = the finger is perfectly straight
-      90° = the finger is bent at a right angle (like the letter L)
+    The calculation uses the full 3D coordinates (x, y, z).
     """
-    landmark_above   = np.array(landmark_above)
-    joint_to_measure = np.array(joint_to_measure)
-    landmark_below   = np.array(landmark_below)
+    vertex  = np.array(vertex)
+    point_a = np.array(point_a)
+    point_b = np.array(point_b)
 
-    vec_to_above = landmark_above - joint_to_measure
-    vec_to_below = landmark_below - joint_to_measure
+    vec_a = point_a - vertex
+    vec_b = point_b - vertex
 
     # Keep the value inside a safe range to avoid math errors
-    cos = np.dot(vec_to_above, vec_to_below) / (
-        np.linalg.norm(vec_to_above) * np.linalg.norm(vec_to_below) + 1e-6
+    cos = np.dot(vec_a, vec_b) / (
+        np.linalg.norm(vec_a) * np.linalg.norm(vec_b) + 1e-6
     )
     return float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))
 
@@ -498,8 +465,8 @@ def extract_frame_features(hand_landmarks):
 
     # Step 2: measure how bent each finger joint is (adds 10 numbers)
     for joint in JOINTS:
-        features.append(calculate_angle(coords[joint[0]], coords[joint[1]], coords[joint[2]]))
-        # joint[0]=landmark_above, joint[1]=joint_to_measure, joint[2]=landmark_below
+        features.append(calculate_angle(coords[joint[1]], coords[joint[0]], coords[joint[2]]))
+        # joint[0]=vertex (the joint), joint[1] and joint[2]=the two sides
 
     # Step 3: measure the straight-line distance between every pair of fingertips
     # There are 10 unique pairs from 5 fingertips: C(5,2) = 10 (adds 10 numbers)
@@ -626,18 +593,18 @@ def extract_and_annotate(input_path: str, raw_out: str):
                 # Calculate all 10 joint angles for the angle panel
                 coords = np.array([[lm.x, lm.y, lm.z] for lm in hand_lm.landmark])
                 angles = [
-                    calculate_angle(coords[a], coords[v], coords[b])
-                    for a, v, b in JOINTS
+                    calculate_angle(coords[side_a], coords[vertex], coords[side_b])
+                    for vertex, side_a, side_b in JOINTS
                 ]
 
                 # ── Draw the angle panel below the classification banner area ──
                 # The banner (added in Pass 2) occupies y=12..84, so start at y=90.
                 # Panel layout: 5 rows (one per finger), 2 angles per row (2 joints per finger).
                 PAD      = 12          # left margin — same as the banner
-                ROW_H    = 18          # height of each row in pixels
+                ROW_H    = 26          # height of each row in pixels
                 PANEL_Y  = 90          # top of the panel (just below banner)
-                PANEL_W  = 210         # width of the panel box
-                PANEL_H  = ROW_H * 5 + 8  # 5 fingers × row height + padding
+                PANEL_W  = 320         # width of the panel box
+                PANEL_H  = ROW_H * 5 + 10  # 5 fingers × row height + padding
 
                 # Semi-transparent dark background
                 overlay = frame.copy()
@@ -656,12 +623,47 @@ def extract_and_annotate(input_path: str, raw_out: str):
                 for row_i, (fname, ang1, ang2) in enumerate(finger_rows):
                     row_y = PANEL_Y + 6 + ROW_H * row_i + 12
                     # Finger name in white
-                    cv2.putText(frame, fname, (PAD + 4, row_y),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (220, 220, 220), 1, cv2.LINE_AA)
+                    cv2.putText(frame, fname, (PAD + 6, row_y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1, cv2.LINE_AA)
                     # Two angles in green — J1 and J2 for that finger
                     angle_text = f"J1:{ang1:5.1f}  J2:{ang2:5.1f}"
-                    cv2.putText(frame, angle_text, (PAD + 58, row_y),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 255, 180), 1, cv2.LINE_AA)
+                    cv2.putText(frame, angle_text, (PAD + 96, row_y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 255, 180), 1, cv2.LINE_AA)
+
+                # ── Draw the distance panel below the angle panel ──
+                # The 10 pairwise 3D distances between the 5 fingertips (C(5,2)=10) —
+                # the same "distance feature" fed to the model. Shown as 5 rows × 2 cols.
+                DIST_Y = PANEL_Y + PANEL_H + 6            # just below the angle panel
+                DIST_H = ROW_H * 6 + 8                    # 1 title row + 5 data rows
+
+                overlay = frame.copy()
+                cv2.rectangle(overlay, (PAD, DIST_Y),
+                              (PAD + PANEL_W, DIST_Y + DIST_H), (15, 15, 15), -1)
+                cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
+
+                # Panel title
+                cv2.putText(frame, "Fingertip Distances", (PAD + 6, DIST_Y + 18),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1, cv2.LINE_AA)
+
+                # The 10 pairwise normalised 3D distances between the 5 fingertips
+                # (C(5,2)=10) — exactly the "distance feature" fed to the model.
+                # Values are in MediaPipe's normalised units (0–1), scale-invariant.
+                _tips     = [4, 8, 12, 16, 20]
+                _tip_lbl  = {4: "T", 8: "I", 12: "M", 16: "R", 20: "P"}
+                dist_items = []
+                for a_i in range(len(_tips)):
+                    for b_i in range(a_i + 1, len(_tips)):
+                        d = float(np.linalg.norm(coords[_tips[a_i]] - coords[_tips[b_i]]))
+                        dist_items.append((f"{_tip_lbl[_tips[a_i]]}-{_tip_lbl[_tips[b_i]]}", d))
+
+                # Lay out the 10 values as 5 rows × 2 columns, in cyan
+                for k, (lbl, d) in enumerate(dist_items):
+                    col = k % 2
+                    row = k // 2
+                    dx  = PAD + 8 + col * 150
+                    dy  = DIST_Y + 20 + ROW_H * (row + 1)
+                    cv2.putText(frame, f"{lbl}:{d:4.2f}", (dx, dy),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.46, (255, 220, 120), 1, cv2.LINE_AA)
 
                 # Ask the press tracker which fingers are pressing right now
                 pressing_map       = tracker.update(hand_lm)
@@ -679,16 +681,17 @@ def extract_and_annotate(input_path: str, raw_out: str):
                     cv2.circle(frame, (cx, cy), 10, color, -1)    # filled circle
                     cv2.circle(frame, (cx, cy), 10, (0, 0, 0), 2) # black outline
 
-                    # When pressing, show the note name above the fingertip
+                    # When pressing, show the note name above the fingertip.
+                    # Small text, no background box; a thin dark outline keeps it
+                    # readable over any background.
                     if pressing:
                         note_label = "/".join(finger_note_map[tip_idx])
-                        (tw, th), _ = cv2.getTextSize(note_label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-                        tx, ty = cx - tw // 2, cy - 18
-                        # Draw a black background box so the text is always readable
-                        cv2.rectangle(frame, (tx - 3, ty - th - 3), (tx + tw + 3, ty + 3),
-                                      (0, 0, 0), -1)
+                        (tw, th), _ = cv2.getTextSize(note_label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+                        tx, ty = cx - tw // 2, cy - 14
                         cv2.putText(frame, note_label, (tx, ty),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 2, cv2.LINE_AA)   # outline
+                        cv2.putText(frame, note_label, (tx, ty),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)  # fill
 
                 # Draw R or L near the wrist to show which hand was detected
                 wrist = hand_lm.landmark[0]

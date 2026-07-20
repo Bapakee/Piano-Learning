@@ -823,6 +823,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['video'])) {
       Red &mdash; finger is actively pressing a key
     </span>
   </div>
+  <!-- Legend for the Angle panel (J1/J2 joint-bend angles) -->
+  <p class="annot-hint" style="margin-top:10px;">
+    The <strong>Angle</strong> panel on the video shows, for each finger, two joint-bend angles
+    (<strong>J1</strong> and <strong>J2</strong>) measured in degrees. They describe how curved the
+    finger is at its two joints &mdash; a straighter finger gives an angle closer to 180&deg;, while
+    a more curled finger gives a smaller angle.
+  </p>
+  <!-- Legend for the Fingertip Distances panel abbreviations (T/I/M/R/P) -->
+  <p class="annot-hint" style="margin-top:10px;">
+    The <strong>Fingertip Distances</strong> panel on the video shows the 10 distances between
+    fingertip pairs (e.g. <strong>T&ndash;I</strong> = thumb to index), using these abbreviations:
+  </p>
+  <div style="display:flex; gap:16px; flex-wrap:wrap; margin:6px 0 4px; font-size:.8rem; color:#555;">
+    <span><strong>T</strong> &mdash; Thumb</span>
+    <span><strong>I</strong> &mdash; Index finger</span>
+    <span><strong>M</strong> &mdash; Middle finger</span>
+    <span><strong>R</strong> &mdash; Ring finger</span>
+    <span><strong>P</strong> &mdash; Pinky</span>
+  </div>
   <!-- The annotated video served by Flask's /video/<filename> endpoint -->
   <div class="video-wrap" style="margin-top:12px">
     <video controls playsinline>
